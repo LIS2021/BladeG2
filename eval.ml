@@ -10,6 +10,12 @@ type op =
   | Lt
   | BitAnd;;
 
+let string_of_op (o : op) : string =
+  match o with | Add -> "+"
+               | Lte -> "<="
+               | Lt  -> "<"
+               | BitAnd -> "&"
+
 type label = unit;;
 
 type arr = {base : int; length : int; label : label};;
@@ -19,6 +25,11 @@ type value =
   | CstB of bool
   | CstA of arr;;
 
+let string_of_value (v : value) : string =
+  match v with | CstI n -> string_of_int n
+               | CstB b -> string_of_bool b
+               | CstA a -> "array " ^ string_of_int a.base ^ ", " ^ string_of_int a.length
+
 type expr =
   | Cst of value
   | Var of identifier
@@ -26,6 +37,14 @@ type expr =
   | InlineIf of expr * expr * expr
   | Length of expr
   | Base of expr;;
+
+let rec string_of_expr (e : expr) : string =
+  match e with | Cst v -> string_of_value v
+               | Var x -> x
+               | BinOp(e1, e2, op) -> "(" ^ string_of_expr e1 ^ " " ^ string_of_op op ^ " " ^ string_of_expr e2 ^ ")"
+               | InlineIf(e1, e2, e3) -> string_of_expr e1 ^ " ? " ^ string_of_expr e2 ^ " : " ^ string_of_expr e3
+               | Length(e1) -> "length(" ^ string_of_expr e1 ^ ")"
+               | Base(e1) -> "base(" ^ string_of_expr e1 ^ ")"
 
 type rhs =
   | Expr of expr
@@ -72,7 +91,18 @@ type instruction =
   | Store of expr * label * expr
   | IProtect of identifier * expr 	(* 	id := protect(e) 	*)
   | Guard of expr * prediction * cmd list * guard_id
-  | Fail of guard_id ;;
+  | Fail of guard_id
+  | Fence ;;
+
+let string_of_instruction (instr : instruction) : string =
+  match instr with | Nop -> "Nop"
+                   | Assign(ide, expr) -> ide ^ " := " ^ (string_of_expr expr)
+                   | Load(ide, _, e1) -> ide ^ " := load(" ^ string_of_expr e1 ^ ")"
+                   | Store(e1, _, e2) -> "store(" ^ string_of_expr e1 ^ ", " ^ string_of_expr e2 ^ ")"
+                   | IProtect(ide, e1) -> ide ^ " := protect(" ^ string_of_expr e1 ^ ")"
+                   | Guard(e1, p, _, id) -> "guard(" ^ string_of_expr e1 ^ ", " ^ string_of_bool p ^ ", " ^ string_of_int id ^ ")"
+                   | Fail(id) -> "fail(" ^ string_of_int id ^ ")"
+                   | Fence -> "fence"
 
 (**		CONFIGURATIONS 		**)
 type configuration = {
@@ -90,9 +120,22 @@ type configuration = {
 class processor =
   object (self)
     val mutable state = (0 : int)
+    val mutable printed = (false : bool);
 
-    method get_next_directive =
-      Fetch
+    method get_next_directive (conf : configuration) : directive =
+      match conf.cs with
+        | If(_, _, _) :: _ -> PFetch true
+        | _ :: _ -> Fetch
+        | [] -> (if not printed then (printf "%s\n" (String.concat "\n" (List.map string_of_instruction conf.is)); printed <- true) else ();
+            match conf.is with
+              (* Fa Retire se può altrimenti Exec 0 *)
+              | Nop :: _
+              | Assign(_, Cst(_)) :: _
+              | Store(Cst(CstI(_)), _, Cst(CstI(_))) :: _
+              | Store(Cst(_), _, Cst(_)) :: _
+              | Fail(_) :: _
+              | Fence :: _ -> Retire
+              | _ -> Exec 0)
   end
 
 class fresh_factory =
@@ -151,6 +194,8 @@ else
 
 come fanno nel paper, per evitare di introdurre un nome nuovo
   *)
+  (* Implementiamo la protect-fence mettendo la Fence appena prima dell'Assign nelle istruzioni hw *)
+    | Protect(ide, Fence, Expr(expr)) :: cs1 -> some ({conf with cs = cs1; is = conf.is @ [Fence; Assign(ide, expr)]}, None)
     | Protect(ide, prot_kind, Expr(expr)) :: cs1 -> some ({conf with cs = cs1; is = conf.is @ [IProtect(ide, expr)]}, None)
     | Protect(ide, prot_kind, PtrRead(addr_expr, l)) :: cs1 -> let c1 = VarAssign(ide, PtrRead(addr_expr, l))
                                                                and c2 = Protect(ide, prot_kind, Expr(Var(ide))) in
@@ -177,6 +222,7 @@ let stepRetire (conf : configuration) : (configuration * observation) option =
         some ({conf with is = is1}, None)
     | Store(Cst(_), _, Cst(_)) :: is1 -> failwith "store of non integer values"
     | Fail(p) :: is1 -> some ({conf with is = []; cs = []}, OFail(p))
+    | Fence :: is1 -> some ({conf with is = is1}, None)
     | _ -> none
 
 
@@ -230,40 +276,51 @@ let stepExec (n : int) (conf : configuration) : (configuration * observation) op
   match split conf.is n with
     | None -> none
     | Some (is1, is, is2) ->
-      let rho = phi is1 conf.rho in 
-      match is with
-        | Assign(ide, e) -> some ({conf with is = is1 @ [Assign(ide, Cst(eval e rho))] @ is2}, None)
-        | Guard(e, p, cs', id) -> 
-            if eval e rho = CstB(p)
-              then some({conf with is = is1 @ [Nop] @ is2}, None)
-              else some({conf with is = is1 @ [Nop]; cs = cs'}, Rollback(id))
-        | Load(ide, l, e) -> 
-            if List.exists (fun i -> match i with | Store(_,_,_) -> true | _ -> false) is1 = true 
-              then none 
-              else (match eval e rho with
-                      | CstI(idx) -> some({conf with is = is1 @ [Assign(ide, Cst(CstI(conf.mu.(idx))))] @ is2}, Read(n, [])) (* controllare secondo parametro read *)
-                      | _ -> failwith "memory address should be an integer"
-              )
-        | Store(e1, l, e2) ->
-            (match eval e1 rho, eval e2 rho with
-                  | (CstI(n), CstI(v)) -> some({conf with is = is1 @ [Store(Cst(CstI(n)), l, Cst(CstI(v)))] @is2}, Write(n, []))
-                  | _, _ -> failwith "store of non integer values")
-        | IProtect(ide, Cst(v)) ->
-            if List.exists (fun i -> match i with | Guard(_,_,_,_) -> true | _ -> false) is1 = true 
-              then none 
-              else some({conf with is = is1 @ [Assign(ide, Cst(v))] @ is2}, None)
-        | IProtect(ide, expr) -> some({conf with is = is1 @ [IProtect(ide, Cst(eval expr rho))] @ is2}, None)
-        | Nop -> none
-        | Fail(_) -> none
-        | _ -> failwith "unexpected instruction for exec"
+      (* The LFENCE instruction does not execute until all prior instructions have completed locally, and no later instruction begins execution until LFENCE completes.
+      https://software.intel.com/content/www/us/en/develop/articles/using-intel-compilers-to-mitigate-speculative-execution-side-channel-issues.html?wapkw=lfence%20x86 *)
+      if List.exists (fun i -> i = Fence) is1 = true
+        then none
+        else let rho = phi is1 conf.rho in
+          match is with
+            | Assign(ide, e) -> some ({conf with is = is1 @ [Assign(ide, Cst(eval e rho))] @ is2}, None)
+            | Guard(e, p, cs', id) -> 
+                if eval e rho = CstB(p)
+                  then some({conf with is = is1 @ [Nop] @ is2}, None)
+                  else some({conf with is = is1 @ [Nop]; cs = cs'}, Rollback(id))
+            | Load(ide, l, e) -> 
+                if List.exists (fun i -> match i with | Store(_,_,_) -> true | _ -> false) is1 = true 
+                  then none 
+                  else (match eval e rho with
+                          | CstI(idx) -> some({conf with is = is1 @ [Assign(ide, Cst(CstI(conf.mu.(idx))))] @ is2}, Read(n, [])) (* controllare secondo parametro read *)
+                          | _ -> failwith "memory address should be an integer"
+                  )
+            | Store(e1, l, e2) ->
+                (match eval e1 rho, eval e2 rho with
+                      | (CstI(n), CstI(v)) -> some({conf with is = is1 @ [Store(Cst(CstI(n)), l, Cst(CstI(v)))] @is2}, Write(n, []))
+                      | _, _ -> failwith "store of non integer values")
+            | IProtect(ide, Cst(v)) ->
+                if List.exists (fun i -> match i with | Guard(_,_,_,_) -> true | _ -> false) is1 = true 
+                  then none
+                  else some({conf with is = is1 @ [Assign(ide, Cst(v))] @ is2}, None)
+            | IProtect(ide, expr) -> some({conf with is = is1 @ [IProtect(ide, Cst(eval expr rho))] @ is2}, None)
+            | Nop -> none
+            | Fail(_) -> none
+            | _ -> failwith "unexpected instruction for exec"
 
 let step (conf : configuration) (d : directive) : (configuration * observation) option =
   match conf.is, conf.cs, d with
       | [], [], _       -> none
-      | _, _, Fetch     -> printf "fetch"; stepFetch conf
-      | _, _, PFetch(b) -> printf "pfetch"; stepPFetch b conf
-      | _, _, Exec(n)   -> printf "exec"; stepExec n conf
-      | _, _, Retire    -> printf "retire"; stepRetire conf;;
+      | _, _, Fetch     -> printf "fetch\n"; stepFetch conf
+      | _, _, PFetch(b) -> printf "pfetch\n"; stepPFetch b conf
+      | _, _, Exec(n)   -> printf "exec\n"; stepExec n conf
+      | _, _, Retire    -> printf "retire\n"; stepRetire conf;;
 
-(* let rec eval attacker conf trace counter = *)
-  (* questo si occupa di aggiornare la lista degli osservabili e il counter *)
+let jiteval (proc : processor) (prog : cmd) : configuration * observation list * int =
+  let init_conf = ({is = []; cs = [prog]; mu = Array.make 100 0 ; rho = StringMap.empty} : configuration) in
+  let rec _jiteval (conf : configuration) (obs_trace : observation list) (count : int) : configuration * observation list * int =
+    if (conf.is = [] && conf.cs = []) then (conf, List.rev obs_trace, count)
+    else let direct = proc#get_next_directive conf in
+          match step conf direct with
+              | None -> printf "No transition with the given directive\n"; _jiteval conf obs_trace count
+              | Some(conf', obs) -> _jiteval conf' (obs :: obs_trace) (count + 1)
+  in _jiteval init_conf [] 0;;
