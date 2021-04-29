@@ -18,7 +18,7 @@ let string_of_op (o : op) : string =
 
 type label = unit;;
 
-type arr = {base : int; length : int; label : label};;
+type arr = {base : int; length : int; label : label; name : string};;
 
 type value =
   | CstI of int
@@ -28,7 +28,9 @@ type value =
 let string_of_value (v : value) : string =
   match v with | CstI n -> string_of_int n
                | CstB b -> string_of_bool b
-               | CstA a -> "array " ^ string_of_int a.base ^ ", " ^ string_of_int a.length
+               | CstA a -> a.name
+
+type environment = value StringMap.t;;
 
 type expr =
   | Cst of value
@@ -51,6 +53,11 @@ type rhs =
   | PtrRead of expr * label
   | ArrayRead of arr * expr;;
 
+let rec string_of_rhs (r : rhs) : string =
+  match r with | Expr e -> string_of_expr e
+               | PtrRead(e, _) -> "*(" ^ string_of_expr e ^ ")"
+               | ArrayRead(a, e) -> string_of_value (CstA a) ^ "[" ^ string_of_expr e ^ "]"
+
 type protect = Slh | Fence | Auto;;
 
 type cmd =
@@ -63,6 +70,21 @@ type cmd =
   | If of expr * cmd * cmd
   | While of expr * cmd
   | Protect of identifier * protect * rhs;;
+
+
+let rec string_of_cmd (c : cmd) : string =
+  match c with | Skip -> "Skip"
+               | Fail -> "Fail"
+               | VarAssign(ide, r) -> ide ^ " := " ^ string_of_rhs r
+               | PtrAssign(e1, e2, _) -> "*" ^ string_of_expr e1 ^ " := " ^ string_of_expr e2
+               | ArrAssign(a, e1, e2) -> string_of_value (CstA a) ^ "[" ^ string_of_expr e1 ^ "] := " ^ string_of_expr e2
+               | Seq(c1, c2) -> string_of_cmd c1 ^ ";\n" ^ string_of_cmd c2
+               | If(e, c1, c2) -> "If (" ^ string_of_expr e ^ ") then \n" ^ string_of_cmd c1 ^ "\nelse\n" ^ string_of_cmd c2 ^ "\nfi"
+               | While(e, c) -> "While (" ^ string_of_expr e ^ ") do \n" ^ string_of_cmd c ^ "\nod"
+               | Protect(ide, Slh, r) -> ide ^ " := Protect_slh(" ^ string_of_rhs r ^ ")"
+               | Protect(ide, Fence, r) -> ide ^ " := Protect_f(" ^ string_of_rhs r ^ ")"
+               | Protect(ide, Auto, r) -> ide ^ " := Protect(" ^ string_of_rhs r ^ ")"
+
 
 (** 		DIRECTIVES 		**)
 type prediction = bool
@@ -122,7 +144,7 @@ class processor =
     val mutable state = (0 : int)
     val mutable printed = (false : bool);
 
-    method get_next_directive (conf : configuration) : directive =
+    (* method get_next_directive (conf : configuration) : directive =
       match conf.cs with
         | If(_, _, _) :: _ -> PFetch true
         | _ :: _ -> Fetch
@@ -135,7 +157,13 @@ class processor =
               | Store(Cst(_), _, Cst(_)) :: _
               | Fail(_) :: _
               | Fence :: _ -> Retire
-              | _ -> Exec 0)
+              | _ -> Exec 0) *)
+      method get_next_directive (conf : configuration) : directive =
+        match state with | 0 -> state <- 1; Fetch
+                         | 1 -> state <- 2; PFetch true
+                         | 2 -> state <- 3; Exec 0
+                         | 3 -> state <- 0; Retire
+                         | _ -> failwith "unexpected processor internal state"
   end
 
 class fresh_factory =
@@ -203,7 +231,7 @@ come fanno nel paper, per evitare di introdurre un nome nuovo
     | Protect(ide, prot_kind, ArrayRead(a, idx_expr)) :: cs1 -> let c1 = VarAssign(ide, ArrayRead(a, idx_expr))
                                                                 and c2 = Protect(ide, prot_kind, Expr(Var(ide))) in
                                                                   some ({conf with cs = c1 :: c2 :: cs1}, None)
-    | _ -> printf "unexpected command for fetch, ignoring"; none
+    | _ -> (* printf "unexpected command for fetch, ignoring"; *) none
 
 let stepPFetch (pred : prediction) (conf : configuration) : (configuration * observation) option =
   match conf.cs with
@@ -211,7 +239,7 @@ let stepPFetch (pred : prediction) (conf : configuration) : (configuration * obs
       -> let taken = if pred then then_cmd else else_cmd
          and not_taken = if pred then else_cmd else then_cmd in
           some ({conf with cs = taken :: cs1; is = conf.is @ [Guard(guard_expr, pred, not_taken :: cs1, fresh#get)]}, None)
-    | _ -> printf "unexpected command for pfetch, ignoring"; none
+    | _ -> (* printf "unexpected command for pfetch, ignoring"; *) none
 
 let stepRetire (conf : configuration) : (configuration * observation) option =
   match conf.is with 
@@ -310,17 +338,16 @@ let stepExec (n : int) (conf : configuration) : (configuration * observation) op
 let step (conf : configuration) (d : directive) : (configuration * observation) option =
   match conf.is, conf.cs, d with
       | [], [], _       -> none
-      | _, _, Fetch     -> printf "fetch\n"; stepFetch conf
-      | _, _, PFetch(b) -> printf "pfetch\n"; stepPFetch b conf
-      | _, _, Exec(n)   -> printf "exec\n"; stepExec n conf
-      | _, _, Retire    -> printf "retire\n"; stepRetire conf;;
+      | _, _, Fetch     -> stepFetch conf
+      | _, _, PFetch(b) -> stepPFetch b conf
+      | _, _, Exec(n)   -> stepExec n conf
+      | _, _, Retire    -> stepRetire conf;;
 
-let jiteval (proc : processor) (prog : cmd) : configuration * observation list * int =
-  let init_conf = ({is = []; cs = [prog]; mu = Array.make 100 0 ; rho = StringMap.empty} : configuration) in
+let jiteval (proc : processor) (init_conf : configuration) : configuration * observation list * int =
   let rec _jiteval (conf : configuration) (obs_trace : observation list) (count : int) : configuration * observation list * int =
     if (conf.is = [] && conf.cs = []) then (conf, List.rev obs_trace, count)
     else let direct = proc#get_next_directive conf in
           match step conf direct with
-              | None -> printf "No transition with the given directive\n"; _jiteval conf obs_trace count
+              | None -> (* printf "No transition with the given directive\n"; *) _jiteval conf obs_trace count
               | Some(conf', obs) -> _jiteval conf' (obs :: obs_trace) (count + 1)
   in _jiteval init_conf [] 0;;

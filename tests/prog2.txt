@@ -1,0 +1,15 @@
+%
+a[10]
+%
+i := 0;
+while (i < length(a)) do
+    a[i] := i;
+    i := i + 1
+od;
+sum := 0;
+i := 0;
+while (i < length(a)) do
+    tmp := a[i];
+    sum := sum + tmp;
+    i := i + 1
+od

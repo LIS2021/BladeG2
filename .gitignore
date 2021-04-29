@@ -1,0 +1,10 @@
+# Compilation files
+*.cmi
+*.cmx
+*.o
+# Scanner and parser, build from lex and yacc
+parser.ml
+parser.mli
+scanner.ml
+# Output executable
+prova
