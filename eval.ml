@@ -105,6 +105,13 @@ type observation =
   | OFail of guard_id
   | Rollback of guard_id
 
+let string_of_obs (o : observation) : string =
+  match o with | None -> "None"
+               | Read(i, _) -> "Read(" ^ string_of_int i ^ ")"
+               | Write(i, _) -> "Write(" ^ string_of_int i ^ ")"
+               | OFail(gid) -> "Fail(" ^ string_of_int gid ^ ")"
+               | Rollback(gid) -> "Rollback(" ^ string_of_int gid ^ ")"
+
 (**		INSTRUCTION SET		**)
 type instruction =
   | Nop

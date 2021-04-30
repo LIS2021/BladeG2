@@ -1,0 +1,10 @@
+%
+a[10]
+%
+x := 0;
+while (x < length(a)) do
+    y := a[x];
+    x := x + 1
+od;
+z := y;
+if (z) then skip else skip fi
