@@ -1,6 +1,6 @@
 %{
   module StringMap = Map.Make(String);;
-  open Eval;;
+  open Expr;;
 
   let arrays = ref (StringMap.empty);;
   let used = ref 1;;
@@ -36,7 +36,7 @@
 %left SEMICOLON
 
 %start main             /* the entry point */
-%type <Eval.cmd * Eval.environment * int> main
+%type <Commands.cmd * Expr.environment * int> main
 %%
 main:
     PERCENT decls cmd EOF   { $3, !arrays, !used }

@@ -1,4 +1,7 @@
 open Format;;
+open Expr;;
+open Commands;;
+open Processor;;
 open Eval;;
 
 let print_var mem ide value =
@@ -15,16 +18,13 @@ let print_conf (conf : configuration) : unit =
   printf "\n}\n";;
 
 let _ =
-  try
-    let lexbuf = Lexing.from_channel stdin in
-    let result, rho, mem_size = Parser.main Scanner.token lexbuf in
-    let proc = new processor in
-      printf "\n-------\n%s\n------\n" (Eval.string_of_cmd result);
-      let init_conf = { is = []; cs = [result]; mu = Array.make mem_size 0 ; rho = rho} in
-      let conf, obs_trace, count = jiteval proc init_conf in
-        print_conf conf;
-        printf "Observables: %s\n" (String.concat ", " (List.map string_of_obs obs_trace));
-        printf "Count: %d\n" count;
-        flush stdout
-  with Scanner.Eof ->
-    exit 0
+  let lexbuf = Lexing.from_channel stdin in
+  let result, rho, mem_size = Parser.main Scanner.token lexbuf in
+  let proc = new Processor.cycle_processor in
+    printf "\n-------\n%s\n------\n" (Commands.string_of_cmd result);
+    let init_conf = { is = []; cs = [result]; mu = Array.make mem_size 0 ; rho = rho} in
+    let conf, obs_trace, count = jiteval proc init_conf in
+      print_conf conf;
+      printf "Observables: %s\n" (String.concat ", " (List.map string_of_obs obs_trace));
+      printf "Count: %d\n" count;
+      flush stdout
