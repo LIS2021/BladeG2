@@ -3,6 +3,9 @@
 prova: expr.cmx commands.cmx processor.cmx eval.cmx parser.cmx scanner.cmx prova.cmx
 	ocamlopt -o prova $^
 
+du_prova: expr.cmx commands.cmx graph.cmx scanner.cmx parser.cmx def_use_graph.cmx
+	ocamlopt -o du_prova $^
+
 clean:
 	rm -f *.cmx *.mli *.o
 
@@ -24,14 +27,13 @@ scanner.cmi: scanner.ml parser.cmi
 parser.cmi: parser.mli parser.ml commands.cmi
 	ocamlopt -c $<
 
-prova.cmx: prova.ml eval.cmi parser.cmi scanner.cmi expr.cmi
-	ocamlopt -c $<
+prova.cmx: prova.ml expr.cmi eval.cmi parser.cmi scanner.cmi
 
 eval.cmi: eval.ml expr.cmi commands.cmi processor.cmi
-	ocamlopt -c $<
 
 processor.cmi: processor.ml commands.cmi
-	ocamlopt -c $<
+
+def_use_graph.cmi: def_use_graph.ml graph.cmi expr.cmi commands.cmi parser.cmi scanner.cmi
 
 %.cmi: %.ml
 	ocamlopt -c $<

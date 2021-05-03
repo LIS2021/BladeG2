@@ -8,3 +8,4 @@ parser.mli
 scanner.ml
 # Output executable
 prova
+du_prova
