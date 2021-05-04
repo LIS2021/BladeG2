@@ -49,7 +49,8 @@ type _builder_t = {
 let inf = max_int;;
 
 let normalize_node_t (n : node_t) : node_t =
-  match n with | NExpr(Var(ide)) -> NVar ide
+  match n with | NExpr(Var(ide))
+               | NRhs(Expr(Var(ide))) -> NVar ide
                | NRhs(Expr(e)) -> NExpr e
                | _ -> n;;
 
@@ -136,9 +137,10 @@ let rec _build_du_cmd (c : cmd) (b : _builder_t) : augmented_cmd_t =
 
 let build_def_use (c : cmd) : augmented_cmd_t * node_t graph =
   let b = ({g = Graph.MatrixGraph.empty (); ht = Hashtbl.create 10} : _builder_t) in
-    _build_du_cmd c b, b.g;;
+  let ac = _build_du_cmd c b in
+    ac, b.g;;
 
-let print_graph_bello g : unit =
+(* let print_graph_bello g : unit =
   let print_node_bello (v) : unit =
     print_node v;
     printf " -> [";
@@ -153,4 +155,4 @@ let _ =
   let ac, g = build_def_use result in
     printf "------\n%s\n-------\n" (string_of_acmd ac);
     print_graph_bello g;
-    flush stdout
+    flush stdout *)

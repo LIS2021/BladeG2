@@ -7,5 +7,6 @@ parser.ml
 parser.mli
 scanner.ml
 # Output executable
-prova
+vm
+blade
 du_prova

@@ -172,7 +172,7 @@ let stepExec (n : int) (conf : configuration) : (configuration * observation) op
             | IProtect(ide, expr) -> some({conf with is = is1 @ [IProtect(ide, Cst(eval expr rho))] @ is2}, None)
             | Nop -> none
             | Fail(_) -> none
-            | _ -> failwith "unexpected instruction for exec"
+            | Fence -> none
 
 let step (conf : configuration) (d : directive) : (configuration * observation) option =
   match conf.is, conf.cs, d with

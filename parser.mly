@@ -2,16 +2,19 @@
   module StringMap = Map.Make(String);;
   open Expr;;
 
-  let arrays = ref (StringMap.empty);;
+  let rho = ref (StringMap.empty);;
   let used = ref 1;;
 
   let new_array (ide : identifier) (len : int) : unit =
     let result = (CstA { base = !used; length = len; label = (); name = ide }) in
-      arrays := StringMap.add ide result (!arrays);
+      rho := StringMap.add ide result (!rho);
       used := ((!used) + len);;
 
+  let new_var (ide : identifier) (value : int) : unit =
+    rho := StringMap.add ide (CstI value) (!rho);;
+
   let get_array (ide : identifier) : arr =
-    match StringMap.find ide (!arrays) with | CstA(a) -> a
+    match StringMap.find ide (!rho) with | CstA(a) -> a
                                             | _ -> failwith "???"
 
 %}
@@ -23,7 +26,8 @@
 %token LENGTH BASE QUESTIONMARK COLON
 %token STAR LSQUARE RSQUARE
 %token PERCENT
-%token SKIP FAIL PROTECT SEMICOLON ASSIGN
+%token SKIP FAIL SEMICOLON ASSIGN
+%token PROTECT PROTECT_SLH PROTECT_FENCE PROTECT_HW 
 %token IF THEN ELSE FI
 %token WHILE DO OD
 %token <string> IDENTIFIER
@@ -33,17 +37,18 @@
 %left ADD LTE LT BITAND
 %nonassoc LENGTH BASE
 %nonassoc STAR
-%left SEMICOLON
+%right SEMICOLON
 
 %start main             /* the entry point */
 %type <Commands.cmd * Expr.environment * int> main
 %%
 main:
-    PERCENT decls cmd EOF   { $3, !arrays, !used }
-    | cmd EOF               { $1, !arrays, !used }
+    PERCENT decls cmd EOF   { $3, !rho, !used }
+    | cmd EOF               { $1, !rho, !used }
 ;
 decl:
     IDENTIFIER LSQUARE INT RSQUARE { new_array $1 $3 }
+    | IDENTIFIER ASSIGN INT        { new_var $1 $3 }
 ;
 decls:
     PERCENT                        { () }
@@ -76,4 +81,7 @@ cmd:
     | IF expr THEN cmd ELSE cmd FI { If($2, $4, $6) }
     | WHILE expr DO cmd OD  { While($2, $4) }
     | IDENTIFIER ASSIGN PROTECT LPAREN rhs RPAREN { Protect($1, Auto, $5) }
+    | IDENTIFIER ASSIGN PROTECT_SLH LPAREN rhs RPAREN { Protect($1, Slh, $5) }
+    | IDENTIFIER ASSIGN PROTECT_FENCE LPAREN rhs RPAREN { Protect($1, Fence, $5) }
+    | IDENTIFIER ASSIGN PROTECT_HW LPAREN rhs RPAREN { Protect($1, Hw, $5) }
 ;

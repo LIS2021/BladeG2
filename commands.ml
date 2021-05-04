@@ -14,17 +14,18 @@ type cmd =
 
 
 let rec string_of_cmd (c : cmd) : string =
-match c with | Skip -> "Skip"
-             | Fail -> "Fail"
+match c with | Skip -> "skip"
+             | Fail -> "fail"
              | VarAssign(ide, r) -> ide ^ " := " ^ string_of_rhs r
              | PtrAssign(e1, e2, _) -> "*" ^ string_of_expr e1 ^ " := " ^ string_of_expr e2
              | ArrAssign(a, e1, e2) -> string_of_value (CstA a) ^ "[" ^ string_of_expr e1 ^ "] := " ^ string_of_expr e2
              | Seq(c1, c2) -> string_of_cmd c1 ^ ";\n" ^ string_of_cmd c2
-             | If(e, c1, c2) -> "If (" ^ string_of_expr e ^ ") then \n" ^ string_of_cmd c1 ^ "\nelse\n" ^ string_of_cmd c2 ^ "\nfi"
-             | While(e, c) -> "While (" ^ string_of_expr e ^ ") do \n" ^ string_of_cmd c ^ "\nod"
-             | Protect(ide, Slh, r) -> ide ^ " := Protect_slh(" ^ string_of_rhs r ^ ")"
-             | Protect(ide, Fence, r) -> ide ^ " := Protect_f(" ^ string_of_rhs r ^ ")"
-             | Protect(ide, Auto, r) -> ide ^ " := Protect(" ^ string_of_rhs r ^ ")"
+             | If(e, c1, c2) -> "if (" ^ string_of_expr e ^ ") then \n" ^ string_of_cmd c1 ^ "\nelse\n" ^ string_of_cmd c2 ^ "\nfi"
+             | While(e, c) -> "while (" ^ string_of_expr e ^ ") do \n" ^ string_of_cmd c ^ "\nod"
+             | Protect(ide, Slh, r) -> ide ^ " := protect_slh(" ^ string_of_rhs r ^ ")"
+             | Protect(ide, Fence, r) -> ide ^ " := protect_fence(" ^ string_of_rhs r ^ ")"
+             | Protect(ide, Hw, r) -> ide ^ " := protect_hw(" ^ string_of_rhs r ^ ")"
+             | Protect(ide, Auto, r) -> ide ^ " := protect(" ^ string_of_rhs r ^ ")"
 
 
 (** 		DIRECTIVES 		**)

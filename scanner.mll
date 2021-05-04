@@ -31,6 +31,9 @@ rule token = parse
     | "while"        { WHILE }
     | "do"           { DO }
     | "od"           { OD }
+    | "protect_slh"  { PROTECT_SLH }
+    | "protect_fence"    { PROTECT_FENCE }
+    | "protect_hw"   { PROTECT_HW }
     | "protect"      { PROTECT }
     | ['a'-'z'] [ 'a'-'z' '0'-'9' ]* as lxm { IDENTIFIER(lxm) }
     | eof            { EOF }

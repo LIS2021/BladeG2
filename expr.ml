@@ -59,4 +59,4 @@ let rec string_of_rhs (r : rhs) : string =
                | PtrRead(e, _) -> "*(" ^ string_of_expr e ^ ")"
                | ArrayRead(a, e) -> string_of_value (CstA a) ^ "[" ^ string_of_expr e ^ "]"
 
-type protect = Slh | Fence | Auto;;
+type protect = Slh | Fence | Hw | Auto;;
