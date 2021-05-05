@@ -147,7 +147,7 @@ let stepExec (n : int) (conf : configuration) : (configuration * observation) op
       https://software.intel.com/content/www/us/en/develop/articles/using-intel-compilers-to-mitigate-speculative-execution-side-channel-issues.html?wapkw=lfence%20x86 *)
       if List.exists (fun i -> i = Fence) is1 = true
         then none
-        else let rho = phi is1 conf.rho in
+        else try (let rho = phi is1 conf.rho in
           match is with
             | Assign(ide, e) -> some ({conf with is = is1 @ [Assign(ide, Cst(eval e rho))] @ is2}, None)
             | Guard(e, p, cs', id) -> 
@@ -172,7 +172,9 @@ let stepExec (n : int) (conf : configuration) : (configuration * observation) op
             | IProtect(ide, expr) -> some({conf with is = is1 @ [IProtect(ide, Cst(eval expr rho))] @ is2}, None)
             | Nop -> none
             | Fail(_) -> none
-            | Fence -> none
+            | Fence -> none)
+                with | Not_found
+                     | Invalid_argument(_) -> none
 
 let step (conf : configuration) (d : directive) : (configuration * observation) option =
   match conf.is, conf.cs, d with

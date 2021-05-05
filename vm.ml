@@ -20,7 +20,7 @@ let print_conf (conf : configuration) : unit =
 let _ =
   let lexbuf = Lexing.from_channel stdin in
   let result, rho, mem_size = Parser.main Scanner.token lexbuf in
-  let proc = new Processor.cycle_processor in
+  let proc = new Processor.random_processor in
     printf "\n-------\n%s\n------\n" (Commands.string_of_cmd result);
     let init_conf = { is = []; cs = [result]; mu = Array.make mem_size 0 ; rho = rho} in
     let conf, obs_trace, count = jiteval proc init_conf in

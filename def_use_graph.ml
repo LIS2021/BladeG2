@@ -100,44 +100,57 @@ let _build_du_rhs (r : rhs) (b : _builder_t) : unit =
                     b.g <- connect b.g (get_node b (NExpr e), sink b.g) inf;
                     b.g <- connect b.g (source b.g, get_node b (NRhs r)) inf;;
 
-let rec _build_du_cmd (c : cmd) (b : _builder_t) : augmented_cmd_t =
-  match c with | Skip -> ASkip
-               | Fail -> AFail
+type cost_model_t = int -> int -> cmd -> int;;
+
+type blade_parameters_t = {
+  v1_1 : bool; (* true if we want to protect also from Spectre v1.1, false otherwise *)
+  cost : cost_model_t;
+};;
+
+let rec _build_du_cmd (c : cmd) (b : _builder_t) (depth : int) (n_istr : int) (bp : blade_parameters_t) : augmented_cmd_t * int =
+  match c with | Skip -> ASkip, 1
+               | Fail -> AFail, 1
                | VarAssign(ide, r) ->
                     _build_du_rhs r b;
                     let n_r = get_node b (NRhs r) in
                     let n_ide = get_node b (NVar ide) in
-                    b.g <- connect b.g (n_r, n_ide) 1;
-                    AVarAssign(ide, r, n_ide, n_r)
+                    b.g <- connect b.g (n_r, n_ide) (bp.cost depth n_istr c);
+                    AVarAssign(ide, r, n_ide, n_r), 1
                | PtrAssign(e1, e2, l) ->
                     _build_du_expr e1 b;
                     _build_du_expr e2 b;
                     b.g <- connect b.g (get_node b (NExpr e1), sink b.g) inf;
-                    b.g <- connect b.g (get_node b (NExpr e2), sink b.g) 0; (* cambiare costo per Spectre v1.1 o no *)
-                    APtrAssign(e1, e2, l)
+                    b.g <- connect b.g (get_node b (NExpr e2), sink b.g) (if bp.v1_1 then inf else 0); (* cambiare costo per Spectre v1.1 o no *)
+                    APtrAssign(e1, e2, l), 1
                | ArrAssign(a, e1, e2) ->
                     _build_du_expr e1 b;
                     _build_du_expr e2 b;
                     b.g <- connect b.g (get_node b (NExpr e1), sink b.g) inf;
-                    b.g <- connect b.g (get_node b (NExpr e2), sink b.g) 0; (* cambiare costo per Spectre v1.1 o no *)
-                    AArrAssign(a, e1, e2)
-               | Seq(c1, c2) -> ASeq(_build_du_cmd c1 b, _build_du_cmd c2 b)
+                    b.g <- connect b.g (get_node b (NExpr e2), sink b.g) (if bp.v1_1 then inf else 0); (* cambiare costo per Spectre v1.1 o no *)
+                    AArrAssign(a, e1, e2), 1
+               | Seq(c1, c2) -> 
+                  let c1', n_istr1 = _build_du_cmd c1 b depth n_istr bp in
+                  let c2', n_istr2 = _build_du_cmd c2 b depth (n_istr + n_istr1) bp in
+                    ASeq(c1', c2'), n_istr1 + n_istr2
                | If(e, c1, c2) ->
                     _build_du_expr e b;
                     b.g <- connect b.g (get_node b (NExpr e), sink b.g) inf;
-                    AIf(e, _build_du_cmd c1 b, _build_du_cmd c2 b)
+                    let c1', n_istr1 = _build_du_cmd c1 b depth (n_istr + 1) bp in
+                    let c2', n_istr2 = _build_du_cmd c2 b depth (n_istr + 1) bp in
+                    AIf(e, c1', c2'), 1 + (max n_istr1  n_istr2)
                | While(e, c) ->
                     _build_du_expr e b;
                     b.g <- connect b.g (get_node b (NExpr e), sink b.g) inf;
-                    AWhile(e, _build_du_cmd c b)
+                    let c', n_istr' = _build_du_cmd c b (depth + 1) (n_istr + 1) bp in
+                    AWhile(e, c'), 1 + n_istr'
                | Protect(ide, p, r) ->
                     (* we consider already present protects as constraints and preserve them *)
                     _build_du_rhs r b;
-                    AProtect(ide, p, r);;
+                    AProtect(ide, p, r), 1;;
 
-let build_def_use (c : cmd) : augmented_cmd_t * node_t graph =
+let build_def_use (c : cmd) (bp : blade_parameters_t) : augmented_cmd_t * node_t graph =
   let b = ({g = Graph.MatrixGraph.empty (); ht = Hashtbl.create 10} : _builder_t) in
-  let ac = _build_du_cmd c b in
+  let ac, _ = _build_du_cmd c b 1 0 bp in
     ac, b.g;;
 
 (* let print_graph_bello g : unit =

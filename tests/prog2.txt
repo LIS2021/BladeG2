@@ -3,6 +3,8 @@ a[10]
 i := 0
 j := 0
 sum := 0
+tmp := 0
+grd := 0
 %
 while (i < length(a)) do
     a[i] := i;
@@ -12,4 +14,6 @@ while (j < length(a)) do
     tmp := a[j];
     sum := sum + tmp;
     j := j + 1
-od
+od;
+grd := sum;
+if grd then skip else skip fi

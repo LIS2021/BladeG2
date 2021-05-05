@@ -36,10 +36,31 @@ let print_environment (rho : environment) : unit =
   in
   StringMap.iter print_var rho
 
+(* Possible cost models *)
+let depth_factor = (3 : int);;
+let slh_cost = (2 : int);; (* Slh implementation uses 2 machine instructions *)
+
+let is_slh (c : cmd) : bool =
+  match c with | VarAssign(_, r) ->  (match r with | ArrayRead(_, _) -> true
+                                                   | _ -> false)
+               | _ -> false;;
+
+let constant_cm (_ : int) (_ : int) (_ : cmd) : int = 1;;
+let linear_cm (depth : int) (n_istr : int) (c : cmd) : int =
+  let base_cost = if is_slh c then slh_cost else n_istr in
+  let factor = depth_factor * depth in
+  base_cost * factor;;
+let exp_cm (depth : int) (n_istr : int) (c : cmd) : int =
+  let base_cost = if is_slh c then slh_cost else n_istr in
+  let factor = (float_of_int depth_factor) ** (float_of_int depth) in
+  base_cost * int_of_float factor;;
+
+(* Main entry point *)
+
 let _ =
   let lexbuf = Lexing.from_channel stdin in
   let result, rho, _ = Parser.main Scanner.token lexbuf in
-  let ac, g = build_def_use result in
+  let ac, g = build_def_use result {v1_1 = false; cost = exp_cm} in
   let cut = FNM.min_cut g in
   (* printf "\n---------\nCut: [";
   List.iter (fun v -> print_node v; printf ", ") cut;
@@ -47,6 +68,6 @@ let _ =
   let repaired = repair ac cut in
     printf "%%\n";
     print_environment rho;
-    printf "%%\n";    
+    printf "%%\n";
     printf "%s\n" (string_of_cmd repaired);
     flush stdout
