@@ -36,7 +36,7 @@ vm.cmx: vm.ml expr.cmi eval.cmi parser.cmi scanner.cmi
 
 eval.cmi: eval.ml expr.cmi commands.cmi processor.cmi
 
-processor.cmi: processor.ml commands.cmi
+processor.cmi: processor.ml expr.cmi commands.cmi
 
 def_use_graph.cmi: def_use_graph.ml graph.cmi expr.cmi commands.cmi parser.cmi scanner.cmi
 
