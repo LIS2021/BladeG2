@@ -2,21 +2,45 @@ open Expr;;
 open Commands;;
 open Option;;
 open Format;;
+open Utils;;
 
-let split (l : 'a list) (n : int) =
-  if List.length l <= n then none else
-    let rec _split (l1, x, l2) (n : int) =
-      match n with
-      | 0 -> some (l1, x, l2)
-      | n -> _split (l1 @ [x], List.hd l2, List.tl l2) (n - 1)
-    in _split ([], List.hd l, List.tl l) n;;
+let can_fetch (cs : cmd list) : bool = cs != [];;
 
-let rec firstk k xs = match xs with
-  | [] -> []
-  | x::xs -> if k=1 then [x] else x::firstk (k-1) xs;;
+let can_retire (is : instruction list) : bool =
+  match is with
+    | Nop :: _
+    | Fail(_) :: _
+    | Fence :: _
+    | Assign(_, Cst(_)) :: _
+    | Store(Cst(CstI(_)), _, Cst(CstI(_))) :: _ -> true
+    | _ -> false;;
 
-let taile l = match l with | [] -> []
-                         | _ :: t -> t;;
+let can_exec (n : int) (is : instruction list) (rho : environment) : bool =
+  match split is n with
+    | None -> false
+    | Some (is1, is, _) ->
+      (* The LFENCE instruction does not execute until all prior instructions have completed locally, and no later instruction begins execution until LFENCE completes.
+      https://software.intel.com/content/www/us/en/develop/articles/using-intel-compilers-to-mitigate-speculative-execution-side-channel-issues.html?wapkw=lfence%20x86 *)
+      if List.exists (fun i -> i = Fence) is1
+        then false
+      else try (let rho' = Eval.phi is1 rho in
+        match is with
+          | Assign(_, e) -> ignore (Eval.eval e rho'); true
+          | Guard(e, _, _, _) ->
+              ignore (Eval.eval e rho'); true
+          | Load(_, _, e) ->
+              if List.exists (fun i -> match i with | Store(_,_,_) -> true | _ -> false) is1 then false else (ignore (Eval.eval e rho'); true)
+              (* Type errors are handled by the vm *)
+          | Store(e1, _, e2) ->
+              ignore (Eval.eval e1 rho'); ignore (Eval.eval e2 rho'); true
+          | IProtect(_, Cst(_)) ->
+              not (List.exists (fun i -> match i with | Guard(_,_,_,_) -> true | _ -> false) is1)
+          | IProtect(_, expr) -> ignore (Eval.eval expr rho'); true
+          | Nop
+          | Fail(_)
+          | Fence -> false)
+        with | Not_found
+             | Invalid_argument(_) -> false;;
 
 Random.self_init ()
 
@@ -69,7 +93,7 @@ module Processor = struct
 
       method get_next_directive (conf : configuration) : directive =
         if conf != old_conf then (
-          possibilities <- List.mapi (fun i  _ -> Exec i) (firstk 20 conf.is);
+          possibilities <- List.mapi (fun i  _ -> Exec i) (take 20 conf.is);
           can_retire <- true;
           old_conf <- conf)
         else ();
@@ -104,48 +128,43 @@ module Processor = struct
     object(self)
       val fetched_block_len = (20 : int)
       val mem_op_cost = (10 : int)
-      val mutable old_conf = ({is = []; cs = []; mu = [||]; rho = Expr.StringMap.empty} : configuration)
-      val mutable pending_loads_buffer = ([] : (identifier * int) list)
+
+      val mutable pending_loads_buffer = ([] : (identifier * (int * guard_id list)) list)
       val mutable exec_idx = 0
-      val mutable sent_exec = false
 
       val mutable exec_trace = []
-      val mutable fetch_trace = []
+
+      val mutable tot_cost = (0 : int)
 
 
       method private can_retire (is : instruction list) : bool =
         match is with
-          | Nop :: _
-          | Fail(_) :: _
-          | Fence :: _
-          | Assign(_, Cst(_)) :: _ -> true
           | Store(Cst(CstI(_)), _, Cst(CstI(_))) :: _ -> pending_loads_buffer = []
-          | _ -> false
+          | _ -> can_retire is
 
-      method private check_step (new_conf : configuration) : unit =
-        if new_conf != old_conf then
-          (old_conf <- new_conf;
-          if sent_exec then (
-            (* Last Exec was succesfully executed *)
-            sent_exec <- false;
-            match pending_loads_buffer with | [] -> ()
-                                            | (ide, 0) :: ls -> pending_loads_buffer <- ls; exec_idx <- 0
-                                            | (ide, v) :: ls -> pending_loads_buffer <- (ide, v - 1) :: ls
-          )
-          else
-            ()
-        )
-        else
-          if sent_exec then (
-            sent_exec <- false;
-            exec_trace <- List.tl exec_trace
-          )
-          else
-            ()
+      (* Pay t time and possibly reduce cost of pending loads *)
+      method private pay_time (t : int) : unit =
+        let rec helper (n : int) : unit =
+          match pending_loads_buffer with | [] -> ()
+                                          | (ide, (v, l)) :: ls when v > n -> pending_loads_buffer <- (ide, (v - n, l)) :: ls
+                                          | (ide, (v, l)) :: ls -> pending_loads_buffer <- ls; exec_idx <- 0; helper (n - v)
+        in
+        helper t;
+        tot_cost <- tot_cost + t
+
+      method private add_fetch_cost : unit =
+        self#pay_time 1
+
+      method private add_retire_cost (istr : instruction) : unit =
+        match istr with | Store(_, _, _) -> self#pay_time mem_op_cost
+                        | _ -> self#pay_time 1
+
+      method private add_exec_cost : unit =
+        (* TODO *)
+        self#pay_time 1
 
       method private get_fetch (c : cmd) : directive =
-        fetch_trace <- c :: fetch_trace;
-        sent_exec <- false;
+        self#add_fetch_cost;
         match c with | If(_, _, _) -> PFetch true (* TODO speculatore *)
                      | _ -> Fetch
 
@@ -161,47 +180,72 @@ module Processor = struct
                        | Base(e) -> helper e
           in helper e
 
+      method private i_depends_pending_load (i : instruction) : bool =
+        match i with | IProtect(_, e)
+                     | Guard(e, _, _, _)
+                     | Assign(_, e)
+                     | Load(_, _, e) -> self#depends_pending_load e
+                     | Store(e1, _, e2) -> self#depends_pending_load e1 || self#depends_pending_load e2
+                     | Nop
+                     | Fence
+                     | Fail(_) -> false
+
       method private get_exec (conf : configuration) : directive =
         let istr = List.nth_opt conf.is exec_idx in
         if istr = None then (
-          pending_loads_buffer <- taile pending_loads_buffer; (* Finisco di aspettare la prima load bufferata. Occhio al costo! *)
+          (* Se nessuna delle n istruzioni successive è eseguibile si attende la terminazione della prima load pendente,
+             poi si riparte perché questa load potrebbe aver sbloccato alcune istruzioni *)
+          pending_loads_buffer <- taile pending_loads_buffer; (* TODO occhio al costo! Pagare quello che rimane della testa del pending_loads_buffer *)
           exec_idx <- 0;
           self#get_next_directive conf)
         else (
-          exec_idx <- exec_idx + 1;
-          match Option.get istr with | Nop
-                                     | Fence
-                                     | Fail(_) -> self#get_exec conf
-                                     | IProtect(_, e)
-                                     | Guard(e, _, _, _)
-                                     | Assign(_, e) -> if self#depends_pending_load e then
-                                          self#get_exec conf
-                                        else (
-                                          sent_exec <- true;
-                                          exec_trace <- (exec_idx - 1, Option.get istr) :: exec_trace;
-                                          Exec (exec_idx - 1))
-                                     | Store(e1, _, e2) -> if self#depends_pending_load e1 || self#depends_pending_load e2 then
-                                          self#get_exec conf
-                                        else (
-                                          sent_exec <- true;
-                                          exec_trace <- (exec_idx - 1, Option.get istr) :: exec_trace;
-                                          Exec (exec_idx - 1))
-                                     | Load(ide, _, e) -> if self#depends_pending_load e then
-                                          self#get_exec conf
-                                        else (
-                                          pending_loads_buffer <- pending_loads_buffer @ [(ide, mem_op_cost)];
-                                          sent_exec <- true;
-                                          exec_trace <- (exec_idx - 1, Option.get istr) :: exec_trace;
-                                          Exec (exec_idx - 1))
+          if (not (can_exec exec_idx conf.is conf.rho)) || self#i_depends_pending_load (Option.get istr) then (
+            (* Can't exec the instruction due to semantics or to pending loads *)
+            exec_idx <- exec_idx + 1;
+            self#get_exec conf)
+          else
+            (* Can exec the instruction *)
+            let current_exec_idx = exec_idx in
+            match Option.get istr with | IProtect(_, _)
+                                       | Assign(_, _)
+                                       | Store(_, _, _) -> (
+                                          exec_idx <- exec_idx + 1;
+                                          self#add_exec_cost; (* OCCHIO va prima di exec_idx++ perché potrebbe modificarlo anche la pay_time *)
+                                          exec_trace <- (current_exec_idx, Option.get istr) :: exec_trace;
+                                          Exec current_exec_idx)
+                                       | Guard(e, p, _, id) -> (
+                                          if Eval.eval e (Eval.phi (take current_exec_idx conf.is) conf.rho) != CstB(p) then
+                                            (* Rollback, we drop pending loads that were rollbacked *)
+                                            pending_loads_buffer <- List.filter (fun (_, (_, ids)) -> not (List.mem id ids)) pending_loads_buffer
+                                          else
+                                            ();
+                                          exec_idx <- exec_idx + 1;
+                                          self#add_exec_cost;
+                                          exec_trace <- (current_exec_idx, Option.get istr) :: exec_trace;
+                                          Exec current_exec_idx)
+                                       | Load(ide, _, _) -> (
+                                          exec_idx <- exec_idx + 1;
+                                          self#add_exec_cost;
+                                          let guard_ids = List.filter_map (fun i -> match i with | Guard(_, _, _, id) -> some id | _ -> none) (take current_exec_idx conf.is) in
+                                          pending_loads_buffer <- pending_loads_buffer @ [(ide, (mem_op_cost, guard_ids))];
+                                          exec_trace <- (current_exec_idx, Option.get istr) :: exec_trace;
+                                          Exec current_exec_idx)
+                                       | _ -> failwith "shouldn't reach this program point (see processor#get_exec)!"
         )
 
       method get_next_directive (conf : configuration) : directive =
-        self#check_step conf;
-        if List.length conf.is < fetched_block_len && conf.cs != [] then
+        (* (if conf != old_conf then
+          (old_conf <- conf;
+          match pending_loads_buffer with | [] -> ()
+                                          | (ide, (0, _)) :: ls -> pending_loads_buffer <- ls; exec_idx <- 0
+                                          | (ide, (v, l)) :: ls -> pending_loads_buffer <- (ide, (v - 1, l)) :: ls;
+        )
+        else
+          failwith "stessa configurazione due vote di fila"); *)
+        if List.length conf.is < fetched_block_len && can_fetch conf.cs then
           self#get_fetch (List.hd conf.cs)
         else if self#can_retire conf.is then (
             exec_idx <- 0;
-            sent_exec <- false;
             Retire
           )
           else

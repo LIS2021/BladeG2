@@ -37,6 +37,12 @@ type directive =
   | Exec of int
   | Retire
 
+let string_of_directive (d : directive) : string =
+  match d with | Fetch -> "Fetch"
+               | PFetch(b) -> "PFetch(" ^ string_of_bool b ^ ")"
+               | Exec(n) -> "Exec(" ^ string_of_int n ^ ")"
+               | Retire -> "Retire"
+
 type guard_id = int;;
 
 (** 		OBSERVATIONS 		**)

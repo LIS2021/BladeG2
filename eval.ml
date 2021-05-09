@@ -4,6 +4,7 @@ open Format;;
 
 open Expr;;
 open Commands;;
+open Utils;;
 
 class fresh_factory =
   object (self)
@@ -93,6 +94,7 @@ let stepRetire (conf : configuration) : (configuration * observation) option =
     | _ -> none
 
 
+(* StringMaps are immutable, phi returns a new rho *)
 let rec phi (is : instruction list) (rho : value StringMap.t) : value StringMap.t =
   match is with 
     | [] -> rho
@@ -130,14 +132,6 @@ let rec eval (e: expr) (rho : value StringMap.t): value =
     | Base(e) -> (match (eval e rho) with
                               | CstA(v) -> CstI(v.base)
                               | _ -> failwith("Errore di tipo: base"));;
-
-let split (l : 'a list) (n : int) =
-  if List.length l <= n then none else
-    let rec _split (l1, x, l2) (n : int) =
-      match n with
-      | 0 -> some (l1, x, l2)
-      | n -> _split (l1 @ [x], List.hd l2, List.tl l2) (n - 1)
-    in _split ([], List.hd l, List.tl l) n
 
 let stepExec (n : int) (conf : configuration) : (configuration * observation) option =
   match split conf.is n with
@@ -177,6 +171,7 @@ let stepExec (n : int) (conf : configuration) : (configuration * observation) op
                      | Invalid_argument(_) -> none
 
 let step (conf : configuration) (d : directive) : (configuration * observation) option =
+  (* printf "%s\n" (string_of_directive d); *)
   match conf.is, conf.cs, d with
       | [], [], _       -> none
       | _, _, Fetch     -> stepFetch conf
@@ -184,11 +179,11 @@ let step (conf : configuration) (d : directive) : (configuration * observation) 
       | _, _, Exec(n)   -> stepExec n conf
       | _, _, Retire    -> stepRetire conf;;
 
-let jiteval (proc : Processor.Processor.processor_t) (init_conf : configuration) : configuration * observation list * int =
+let jiteval (proc) (init_conf : configuration) : configuration * observation list * int =
   let rec _jiteval (conf : configuration) (obs_trace : observation list) (count : int) : configuration * observation list * int =
     if (conf.is = [] && conf.cs = []) then (conf, List.rev obs_trace, count)
     else let direct = proc#get_next_directive conf in
           match step conf direct with
-              | None -> (* printf "No transition with the given directive\n"; *) _jiteval conf obs_trace count
+              | None -> _jiteval conf obs_trace count
               | Some(conf', obs) -> _jiteval conf' (obs :: obs_trace) (count + 1)
   in _jiteval init_conf [] 0;;

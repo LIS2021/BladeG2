@@ -2,7 +2,7 @@
 
 all: vm blade
 
-vm: expr.cmx commands.cmx processor.cmx eval.cmx parser.cmx scanner.cmx vm.cmx
+vm: expr.cmx commands.cmx utils.cmx eval.cmx processor.cmx parser.cmx scanner.cmx vm.cmx
 	ocamlopt -o vm $^
 
 blade: expr.cmx commands.cmx graph.cmx scanner.cmx parser.cmx flow_network.cmx def_use_graph.cmx blade.cmx
@@ -32,11 +32,13 @@ scanner.cmi: scanner.ml parser.cmi
 parser.cmi: parser.mli parser.ml commands.cmi
 	ocamlopt -c $<
 
-vm.cmx: vm.ml expr.cmi eval.cmi parser.cmi scanner.cmi
+vm.cmx: vm.ml processor.cmi expr.cmi eval.cmi parser.cmi scanner.cmi
 
-eval.cmi: eval.ml expr.cmi commands.cmi processor.cmi
+eval.cmi: eval.ml expr.cmi commands.cmi utils.cmi
 
-processor.cmi: processor.ml expr.cmi commands.cmi
+utils.cmi: utils.ml expr.cmi commands.cmi
+
+processor.cmi: processor.ml expr.cmi commands.cmi utils.cmi eval.cmi
 
 def_use_graph.cmi: def_use_graph.ml graph.cmi expr.cmi commands.cmi parser.cmi scanner.cmi
 
