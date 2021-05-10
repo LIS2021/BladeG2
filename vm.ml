@@ -23,9 +23,8 @@ let _ =
   let proc = new Processor.complex_processor in
     printf "\n-------\n%s\n------\n" (Commands.string_of_cmd result);
     let init_conf = { is = []; cs = [result]; mu = Array.make (mem_size + 100) 0 ; rho = rho} in
-    let conf, obs_trace, count = jiteval proc init_conf in
+    let conf, obs_trace = jiteval proc init_conf in
       print_conf conf;
       (* printf "Observables: %s\n" (String.concat ", " (List.map string_of_obs obs_trace)); *)
-      printf "Count: %d\n" count;
       proc#print_state ();
       flush stdout

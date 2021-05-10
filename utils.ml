@@ -12,7 +12,4 @@ let split (l : 'a list) (n : int) =
 
 let rec take k xs = match xs with
     | [] -> []
-    | x::xs -> if k=1 then [x] else x::take (k-1) xs;;
-
-let taile l = match l with | [] -> []
-                       | _ :: t -> t;;
+    | x::xs -> if k <= 0 then [] else x::take (k-1) xs;;

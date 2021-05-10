@@ -20,8 +20,8 @@ match c with | Skip -> "skip"
              | PtrAssign(e1, e2, _) -> "*" ^ string_of_expr e1 ^ " := " ^ string_of_expr e2
              | ArrAssign(a, e1, e2) -> string_of_value (CstA a) ^ "[" ^ string_of_expr e1 ^ "] := " ^ string_of_expr e2
              | Seq(c1, c2) -> string_of_cmd c1 ^ ";\n" ^ string_of_cmd c2
-             | If(e, c1, c2) -> "if (" ^ string_of_expr e ^ ") then \n" ^ string_of_cmd c1 ^ "\nelse\n" ^ string_of_cmd c2 ^ "\nfi"
-             | While(e, c) -> "while (" ^ string_of_expr e ^ ") do \n" ^ string_of_cmd c ^ "\nod"
+             | If(e, c1, c2) -> "if " ^ string_of_expr e ^ " then \n" ^ string_of_cmd c1 ^ "\nelse\n" ^ string_of_cmd c2 ^ "\nfi"
+             | While(e, c) -> "while " ^ string_of_expr e ^ " do \n" ^ string_of_cmd c ^ "\nod"
              | Protect(ide, Slh, r) -> ide ^ " := protect_slh(" ^ string_of_rhs r ^ ")"
              | Protect(ide, Fence, r) -> ide ^ " := protect_fence(" ^ string_of_rhs r ^ ")"
              | Protect(ide, Hw, r) -> ide ^ " := protect_hw(" ^ string_of_rhs r ^ ")"
