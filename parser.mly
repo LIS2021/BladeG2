@@ -4,6 +4,7 @@
 
   let rho = ref (StringMap.empty);;
   let used = ref 1;;
+  let if_id_count = ref 1;;
 
   let new_array (ide : identifier) (len : int) : unit =
     let result = (CstA { base = !used; length = len; label = (); name = ide }) in
@@ -17,6 +18,10 @@
     match StringMap.find ide (!rho) with | CstA(a) -> a
                                             | _ -> failwith "???"
 
+  let get_if_id () : int =
+    let result = !if_id_count in
+        if_id_count := !if_id_count + 1;
+        result
 %}
 
 /* File parser.mly */
@@ -78,8 +83,8 @@ cmd:
     | STAR expr ASSIGN expr { PtrAssign($2, $4, ()) }
     | IDENTIFIER LSQUARE expr RSQUARE ASSIGN expr { ArrAssign(get_array $1, $3, $6) }
     | cmd SEMICOLON cmd     { Seq($1, $3) }
-    | IF expr THEN cmd ELSE cmd FI { If($2, $4, $6) }
-    | WHILE expr DO cmd OD  { While($2, $4) }
+    | IF expr THEN cmd ELSE cmd FI { If($2, $4, $6, get_if_id ()) }
+    | WHILE expr DO cmd OD  { While($2, $4, get_if_id ()) }
     | IDENTIFIER ASSIGN PROTECT LPAREN rhs RPAREN { Protect($1, Auto, $5) }
     | IDENTIFIER ASSIGN PROTECT_SLH LPAREN rhs RPAREN { Protect($1, Slh, $5) }
     | IDENTIFIER ASSIGN PROTECT_FENCE LPAREN rhs RPAREN { Protect($1, Fence, $5) }

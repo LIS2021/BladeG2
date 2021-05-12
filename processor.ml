@@ -1,8 +1,12 @@
+module IntMap = Map.Make(Int)
+
 open Expr;;
 open Commands;;
 open Option;;
 open Format;;
 open Utils;;
+
+let mem_op_cost = (20 : int)
 
 let can_fetch (cs : cmd list) : bool = cs != [];;
 
@@ -27,7 +31,7 @@ let can_exec (n : int) (is : instruction list) (rho : environment) : bool =
         match is with
           | Assign(_, Cst(_)) -> false
           | Assign(_, e) -> ignore (Eval.eval e rho'); true
-          | Guard(e, _, _, _) ->
+          | Guard(e, _, _, _, _) ->
               ignore (Eval.eval e rho'); true
           | Load(_, _, e) ->
               if List.exists (fun i -> match i with | Store(_,_,_) -> true | _ -> false) is1 then false else (ignore (Eval.eval e rho'); true)
@@ -35,7 +39,7 @@ let can_exec (n : int) (is : instruction list) (rho : environment) : bool =
           | Store(e1, _, e2) ->
               ignore (Eval.eval e1 rho'); ignore (Eval.eval e2 rho'); true
           | IProtect(_, Cst(_)) ->
-              not (List.exists (fun i -> match i with | Guard(_,_,_,_) -> true | _ -> false) is1)
+              not (List.exists (fun i -> match i with | Guard(_,_,_,_, _) -> true | _ -> false) is1)
           | IProtect(_, expr) -> ignore (Eval.eval expr rho'); true
           | Nop
           | Fail(_)
@@ -50,6 +54,7 @@ type step_t =
     | SRetire of instruction
     | SLoadEnd of identifier * int
     | SRollback of guard_id;;
+    (* | SCost of int;; *)
 
 let string_of_step (s : step_t) : string =
   match s with | SFetch(_) -> "Fetch"
@@ -58,34 +63,77 @@ let string_of_step (s : step_t) : string =
                | SRetire(istr) -> "Retire: " ^ string_of_instruction istr
                | SLoadEnd(ide, v) -> "Load ended: " ^ ide ^ " (left " ^ string_of_int v ^ ")"
                | SRollback(id) -> "Rollback (" ^ string_of_int id ^ ")";;
+               (* | SCost(n) -> "Cost " ^ string_of_int n;; *)
 
 Random.self_init ();;
+
+class speculator =
+  object(self)
+    (* We don't rollback statistics because we assume it's too much overhead for the processor to do so *)
+    val mutable statistics = IntMap.empty
+    val mutable while_flag = false
+
+    method get_prediction (id : if_id) : bool =
+      (*
+       * while_flag means that we compiled a while, so this if is the if of the unrolling of a while and hence we speculate it true
+       * id = 0 is the bound check of an array access, so we speculate it true because otherwise the program crashes (so in this case speculation is useless)
+       *)
+      if while_flag || (id = 0) then (
+        while_flag <- false;
+        true)
+      else (
+        match IntMap.find_opt id statistics with | None -> statistics <- IntMap.add id (0, 0) statistics; true
+                                                 | Some (ntrue, nfalse) -> if ntrue < nfalse then false else true)
+
+    method update_stats (id : if_id) (outcome : bool) : unit =
+      let updater old =
+        match old with | None -> None
+                       | Some(ntrue, nfalse) -> if outcome then some (ntrue + 1, nfalse) else some (ntrue, nfalse + 1)
+      in
+      if id != 0 then
+        statistics <- IntMap.update id updater statistics
+      else
+        ()
+    
+    method fetch_while : unit =
+      while_flag <- true
+  end;;
 
 module Processor = struct
   class type processor_t =
     object
       method get_next_directive : Commands.configuration -> Commands.directive
-      method print_state : unit -> unit
+      method print_state : bool -> unit
     end
 
   class simple_processor : processor_t = 
     object (self)
+      val mem_op_cost = mem_op_cost
+      val mutable tot_cost = (0 : int)
+      val mutable exec0 = (0 : int)
+      val mutable loadc = (0 : int)
+
       method get_next_directive (conf : configuration) : directive =
         match conf.is with
-            | [] -> (match conf.cs with | If(_, _, _) :: _ -> PFetch true
-                                        | _ :: _ -> Fetch
-                                        | [] -> Exec 0 (* The JIT should never ask a directive when both is and cs are empty *)
+            | [] -> (match conf.cs with | If(_, _, _, _) :: _ -> tot_cost <- tot_cost + 1; PFetch true
+                                        | _ :: _ -> tot_cost <- tot_cost + 1; Fetch
+                                        | [] -> tot_cost <- tot_cost + 1; exec0 <- exec0 + 1; Exec 0 (* The JIT should never ask a directive when both is and cs are empty *)
                     )
             (* Fa Retire se può altrimenti Exec 0 *)
             | Nop :: _
             | Assign(_, Cst(_)) :: _
-            | Store(Cst(CstI(_)), _, Cst(CstI(_))) :: _
-            | Store(Cst(_), _, Cst(_)) :: _
             | Fail(_) :: _
-            | Fence :: _ -> Retire
-            | _ -> Exec 0
-      
-      method print_state () = ()
+            | Fence :: _ -> tot_cost <- tot_cost + 1; Retire
+            | Store(Cst(CstI(_)), _, Cst(CstI(_))) :: _ -> tot_cost <- tot_cost + mem_op_cost; Retire
+            | Load(_, _, _) :: _ -> tot_cost <- tot_cost + 1 + mem_op_cost; exec0 <- exec0 + 1; loadc <- loadc + mem_op_cost; Exec 0
+            | _ -> tot_cost <- tot_cost + 1; exec0 <- exec0 + 1; Exec 0
+
+      method print_state (_ : bool) =
+        printf "--------- Simple processor output ---------\n";
+        printf "Total cost: %d\n" tot_cost;
+        printf "Number of Exec: %d\n" exec0;
+        printf "Number of loads: %d\n" (loadc / mem_op_cost);
+        printf "Total time spent waiting loads: %d\n" loadc;
     end;;
 
   class cycle_processor : processor_t = 
@@ -93,7 +141,7 @@ module Processor = struct
         val mutable state = (0 : int)
 
       method private get_fetch (c : cmd) : directive =
-        match c with | If(_, _, _) -> PFetch true
+        match c with | If(_, _, _, _) -> PFetch true
                      | _ -> Fetch
 
         method get_next_directive (conf : configuration) : directive =
@@ -102,7 +150,7 @@ module Processor = struct
                            | 2 -> state <- 0; if can_retire conf.is then Retire else self#get_next_directive conf
                            | _ -> failwith "unexpected processor internal state"
           
-        method print_state () = ()
+        method print_state (_ : bool) = ()
       end;;
 
   (* Doesn't work *)
@@ -132,7 +180,7 @@ module Processor = struct
               1
           ) in
         match r with
-          | 0 -> (match conf.cs with | If(_, _, _) :: _ -> PFetch true
+          | 0 -> (match conf.cs with | If(_, _, _, _) :: _ -> PFetch true
                                      | [] -> Retire
                                      | _ -> Fetch)
           | 1 -> if possibilities = [] then Retire else (let i = Random.int (List.length possibilities) in
@@ -142,76 +190,97 @@ module Processor = struct
           | 2 -> can_retire <- false; Retire
           | _ -> failwith "Unexpected random number"
       
-      method print_state () = ()
+      method print_state (_ : bool) = ()
     end;;
 
   class complex_processor : processor_t =
     object(self)
-      val fetched_block_len = (20 : int)
-      val mem_op_cost = (20 : int)
+      val onthefly_buffer_target_len = (20 : int)
+      val mem_op_cost = mem_op_cost
 
-      val mutable pending_loads_buffer = ([] : (identifier * (int * guard_id list)) list)
+      (* For each load we keep: identifier = variable assigned, int = time left, guard_id list = list of guard ids of
+         guards that, when rollbacked, removes this load, int = timestamp of the load *)
+      (* TODO: forse il guard_id list non serve con i timestamp, ma vediamo dopo *)
+      val mutable pending_loads_buffer = ([] : (identifier * (int * guard_id list * int)) list)
       val mutable exec_idx = 0
 
       val mutable exec_trace = ([] : step_t list)
 
       val mutable tot_cost = (0 : int)
+      
+      val mutable retnum = (0 : int) (* Retnum is used to compute ordering of instructions *)
 
+      val mutable exec0 = (0 : int)
+      val mutable execOOO = (0 : int)
+      val mutable loadc = (0 : int)
+      val mutable loadn = (0 : int)
+
+      val specul = new speculator
 
       method private can_retire (is : instruction list) : bool =
         match is with
           | Store(Cst(CstI(_)), _, Cst(CstI(_))) :: _ -> pending_loads_buffer = []
-          | Assign(ide, Cst(_)) :: _ -> not (List.mem_assoc ide pending_loads_buffer)
+          (* Checking that this Assign isn't the result of a load that hasn't completed yet *)
+          | Assign(ide, Cst(_)) :: _ -> not (List.exists (fun (idel, (_, _, ts)) -> ide = idel && ts = retnum) pending_loads_buffer)
           | _ -> can_retire is
 
       (* Pay t time and possibly reduce cost of pending loads *)
       method private pay_time (t : int) : unit =
         let rec helper (n : int) : unit =
           match pending_loads_buffer with | [] -> ()
-                                          | (ide, (v, l)) :: ls when v > n -> pending_loads_buffer <- (ide, (v - n, l)) :: ls
-                                          | (ide, (v, l)) :: ls -> pending_loads_buffer <- ls;
-                                                                   exec_trace <- SLoadEnd(ide, 0) :: exec_trace;
-                                                                   exec_idx <- 0;
-                                                                   helper (n - v)
+                                          | (ide, (v, l, ts)) :: ls when v > n -> pending_loads_buffer <- (ide, (v - n, l, ts)) :: ls
+                                          | (ide, (v, _, _)) :: ls -> pending_loads_buffer <- ls;
+                                                                      exec_trace <- SLoadEnd(ide, 0) :: exec_trace;
+                                                                      exec_idx <- 0;
+                                                                      helper (n - v)
         in
         helper t;
+        (* exec_trace <- SCost(t) :: exec_trace; *)
         tot_cost <- tot_cost + t
 
       method private add_fetch_cost : unit =
-        self#pay_time 1
+        self#pay_time 1 (* TODO *)
 
       method private add_retire_cost (istr : instruction) : unit =
         match istr with | Store(_, _, _) -> self#pay_time mem_op_cost
                         | _ -> self#pay_time 1
 
       method private add_exec_cost (istr : instruction) : unit =
-        self#pay_time 1 (* All instructions cost 1 at Exec time. Memory ops cost more, but we pay this either with the pending loads buffer or at Retire time *)
+        self#pay_time 1 (* All instructions cost 1 at Exec time. Memory ops cost more, but we pay this either with the pending loads buffer (Loads) or at Retire time (Stores) *)
+
+      method private can_fetch (conf : configuration) : bool =
+        let can_fetch_specul = not (List.exists (fun i -> match i with | Guard(_, _, _, _, _) -> true | _ -> false) conf.is && (pending_loads_buffer = [])) in
+        List.length conf.is < onthefly_buffer_target_len && conf.cs != [] && can_fetch_specul
 
       method private get_fetch (c : cmd) : directive =
         self#add_fetch_cost;
-        match c with | If(_, _, _) -> exec_trace <- SPFetch(true, c) :: exec_trace;
-                                      PFetch true (* TODO speculatore *)
+        match c with | If(_, _, _, id) -> let pred = specul#get_prediction id in
+                                          exec_trace <- SPFetch(pred, c) :: exec_trace;
+                                          PFetch pred
+                     | While(_, _, _) -> specul#fetch_while;
+                                         exec_trace <- SFetch(c) :: exec_trace;
+                                         Fetch
                      | _ -> exec_trace <- SFetch(c) :: exec_trace;
                             Fetch
 
       (* Checks whether expr e depends on a pending load. Since our Exec
          executes whole expressions, we have to stop the entire execution *)
-      method private depends_pending_load (e : expr) : bool =
+      method private depends_pending_load (e : expr) (ts : int) : bool =
         let rec helper (e : expr) : bool =
           match e with | Cst(_) -> false
-                       | Var(ide) -> List.mem_assoc ide pending_loads_buffer
+                       | Var(ide) -> List.mem_assoc ide (List.filter (fun (_, (_, _, tsl)) -> tsl <= ts) pending_loads_buffer)
                        | BinOp(e1, e2, _) -> helper e1 || helper e2
                        | InlineIf(e, e1, e2) -> helper e || helper e1 || helper e2
                        | Length(e)
                        | Base(e) -> helper e
           in helper e
 
-      method private i_depends_pending_load (i : instruction) : bool =
+      method private i_depends_pending_load (i : instruction) (ts : int) : bool =
         match i with | IProtect(_, e)
-                     | Guard(e, _, _, _)
+                     | Guard(e, _, _, _, _)
                      | Assign(_, e)
-                     | Load(_, _, e) -> self#depends_pending_load e
-                     | Store(e1, _, e2) -> self#depends_pending_load e1 || self#depends_pending_load e2
+                     | Load(_, _, e) -> self#depends_pending_load e ts
+                     | Store(e1, _, e2) -> self#depends_pending_load e1 ts || self#depends_pending_load e2 ts
                      | Nop
                      | Fence
                      | Fail(_) -> false
@@ -221,59 +290,68 @@ module Processor = struct
         if istr = None then (
           (* Se nessuna delle n istruzioni successive è eseguibile si attende la terminazione della prima load pendente,
              poi si riparte perché questa load potrebbe aver sbloccato alcune istruzioni *)
-          (match pending_loads_buffer with | [] -> ()
-                                           | (ide, (v, _)) :: ls -> tot_cost <- tot_cost + v;
-                                                                    exec_trace <- SLoadEnd(ide, v) :: exec_trace;
-                                                                    pending_loads_buffer <- ls);
+          (match pending_loads_buffer with | [] -> failwith "Exec out of instruction list with empty pending loads buffer"
+                                           | (ide, (v, _, _)) :: ls -> (* exec_trace <- SCost(v) :: exec_trace; *)
+                                                                       tot_cost <- tot_cost + v;
+                                                                       loadc <- loadc + v;
+                                                                       exec_trace <- SLoadEnd(ide, v) :: exec_trace;
+                                                                       pending_loads_buffer <- ls);
           exec_idx <- 0;
           self#get_next_directive conf)
         else (
           let current_exec_idx = exec_idx in
-          if (not (can_exec current_exec_idx conf.is conf.rho)) || self#i_depends_pending_load (Option.get istr) then (
+          if (not (can_exec current_exec_idx conf.is conf.rho)) || self#i_depends_pending_load (Option.get istr) (retnum + current_exec_idx) then (
             (* Can't exec the instruction due to semantics or to pending loads *)
             exec_idx <- exec_idx + 1;
             self#get_exec conf)
-          else
+          else (
             (* Can exec the instruction *)
+            if current_exec_idx = 0 then exec0 <- exec0 + 1 else execOOO <- execOOO + 1;
+            if current_exec_idx > 0 && pending_loads_buffer = [] then failwith "Can't Exec out of order without pending loads" else ();
             match Option.get istr with | IProtect(_, _)
                                        | Assign(_, _)
                                        | Store(_, _, _) -> (
                                           exec_idx <- exec_idx + 1;
+                                          self#add_exec_cost (Option.get istr); (* OCCHIO va dopo exec_idx++ perché potrebbe modificarlo anche la pay_time *)
                                           exec_trace <- SExec (current_exec_idx, Option.get istr) :: exec_trace;
-                                          self#add_exec_cost (Option.get istr); (* OCCHIO va prima di exec_idx++ perché potrebbe modificarlo anche la pay_time *)
                                           Exec current_exec_idx)
-                                       | Guard(e, p, _, id) -> (
+                                       | Guard(e, p, _, idg, idi) -> (
                                           exec_trace <- SExec (current_exec_idx, Option.get istr) :: exec_trace;
                                           if not (Eval.eval e (Eval.phi (take current_exec_idx conf.is) conf.rho) = CstB(p)) then (
                                             (* Rollback, we drop pending loads that were rollbacked *)
-                                            exec_trace <- SRollback(id) :: exec_trace;
-                                            pending_loads_buffer <- List.filter (fun (_, (_, ids)) -> not (List.mem id ids)) pending_loads_buffer)
-                                          else
-                                            ();
+                                            specul#update_stats idi (not p);
+                                            exec_trace <- SRollback(idg) :: exec_trace;
+                                            pending_loads_buffer <- List.filter (fun (_, (_, ids, _)) -> not (List.mem idg ids)) pending_loads_buffer; (* TODO really need ids? *)
+                                            exec_idx <- 0)
+                                          else (
+                                            specul#update_stats idi p);
                                           exec_idx <- exec_idx + 1;
                                           self#add_exec_cost (Option.get istr);
                                           Exec current_exec_idx)
                                        | Load(ide, _, _) -> (
                                           exec_idx <- exec_idx + 1;
-                                          exec_trace <- SExec (current_exec_idx, Option.get istr) :: exec_trace;
+                                          loadn <- loadn + 1;
                                           self#add_exec_cost (Option.get istr);
-                                          let guard_ids = List.filter_map (fun i -> match i with | Guard(_, _, _, id) -> some id | _ -> none) (take current_exec_idx conf.is) in
-                                          pending_loads_buffer <- pending_loads_buffer @ [(ide, (mem_op_cost, guard_ids))];
+                                          exec_trace <- SExec (current_exec_idx, Option.get istr) :: exec_trace;
+                                          let guard_ids = List.filter_map (fun i -> match i with | Guard(_, _, _, id, _) -> some id | _ -> none) (take current_exec_idx conf.is) in
+                                          pending_loads_buffer <- pending_loads_buffer @ [(ide, (mem_op_cost, guard_ids, retnum + current_exec_idx))];
                                           Exec current_exec_idx)
                                        | _ -> failwith "shouldn't reach this program point (see processor#get_exec)!"
+          )
         )
 
       method get_next_directive (conf : configuration) : directive =
-        if List.length conf.is < fetched_block_len && can_fetch conf.cs then
+        if self#can_fetch conf then
           self#get_fetch (List.hd conf.cs)
         else if self#can_retire conf.is then (
-            exec_idx <- 0;
-            self#add_retire_cost (List.hd conf.is);
-            exec_trace <- SRetire (List.hd conf.is) :: exec_trace;
-            Retire
-          )
-          else
-            self#get_exec conf
+          exec_idx <- 0;
+          self#add_retire_cost (List.hd conf.is);
+          exec_trace <- SRetire (List.hd conf.is) :: exec_trace;
+          retnum <- retnum + 1;
+          Retire
+        )
+        else
+          self#get_exec conf
 
       (* OUTPUT FUNCTIONS *)
       method private print_exec_trace () : unit =
@@ -282,18 +360,25 @@ module Processor = struct
         printf "\n"
       
       method private print_plb () : unit =
-        printf "---------- Pending loads buffer\n";
+        printf "\nPending loads buffer: ";
         if pending_loads_buffer = [] then
-          printf "PLB is empty"
+          printf "empty"
         else
-          List.iter (fun (ide, (v, _)) -> printf "%s - %d" ide v) pending_loads_buffer;
+          List.iter (fun (ide, (v, _, ts)) -> printf "(%s - v: %d, ts: %d), " ide v ts) pending_loads_buffer;
         printf "\n"
 
-      method print_state () =
-        (* printf "\n------- Fetch trace\n";
-        printf "%s" (String.concat "\n#####\n" (List.rev_map string_of_cmd fetch_trace)); *)
-        (* self#print_exec_trace (); *)
-        (* self#print_plb (); *)
-        printf "Exec cost: %d\n" tot_cost
+      method print_state (verbose : bool) =
+        printf "--------- Complex processor output ---------\n";
+        printf "Total cost: %d\n" tot_cost;
+        printf "Number of in order Exec: %d\n" exec0;
+        printf "Number of out-of-order Exec: %d\n" execOOO;
+        printf "Number of loads: %d\n" loadn;
+        printf "Total time spent waiting loads: %d\n" loadc;
+        if verbose then (
+          self#print_exec_trace ();
+          (* self#print_plb (); *) (* Not printed because at the end is always empty *)
+        )
+        else
+          ()
     end;;
 end;;

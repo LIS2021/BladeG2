@@ -24,14 +24,14 @@ let stepFetch (conf : configuration) : configuration * observation =
     | VarAssign(ide, PtrRead(addr_expr, l)) :: cs1 -> {conf with cs = cs1; is = conf.is @ [Load(ide, l, addr_expr)]}, None
     | VarAssign(ide, ArrayRead(a, idx_expr)) :: cs1 -> let guard_expr = BinOp(idx_expr, Length(Cst(CstA(a))), Lt)
                                                        and then_cmd = VarAssign(ide, PtrRead(BinOp(Base(Cst(CstA(a))), idx_expr, Add), a.label)) in
-                                                         {conf with cs = If(guard_expr, then_cmd, Fail) :: cs1}, None
+                                                         {conf with cs = If(guard_expr, then_cmd, Fail, 0) :: cs1}, None (* if_id 0 means an array access *)
     | PtrAssign(addr_expr, expr, l) :: cs1 -> {conf with cs = cs1; is = conf.is @ [Store(addr_expr, l, expr)]}, None
     | ArrAssign(a, idx_expr, expr) :: cs1 -> let guard_expr = BinOp(idx_expr, Length(Cst(CstA(a))), Lt)
                                              and then_cmd = PtrAssign(BinOp(Base(Cst(CstA(a))), idx_expr, Add), expr, a.label) in
-                                              {conf with cs = If(guard_expr, then_cmd, Fail) :: cs1}, None
+                                              {conf with cs = If(guard_expr, then_cmd, Fail, 0) :: cs1}, None (* if_id 0 means an array access *)
     | Seq(c1, c2) :: cs1 -> {conf with cs = c1 :: c2 :: cs1}, None
-    | While(guard_expr, body_cmd) :: cs1 -> let c1 = Seq(body_cmd, While(guard_expr, body_cmd)) in
-                                               {conf with cs = If(guard_expr, c1, Skip) :: cs1}, None
+    | While(guard_expr, body_cmd, id) :: cs1 -> let c1 = Seq(body_cmd, While(guard_expr, body_cmd, id)) in
+                                               {conf with cs = If(guard_expr, c1, Skip, id) :: cs1}, None
     (* protect *)
     | Protect(ide, Slh, ArrayRead(a, idx_expr)) :: cs1
       -> let e1 = BinOp(idx_expr, Length(Cst(CstA(a))), Lt) in (* e < length(a) *)
@@ -39,7 +39,7 @@ let stepFetch (conf : configuration) : configuration * observation =
          let e3 = InlineIf(e1, Cst(CstI(Int.max_int)), Cst(CstI(0)) ) in (* e < length(a) ? 1 : 0 *)
          let e4 = BinOp(e2, e3, BitAnd) in (* (base(a) + e) land (e < length(a) ? 1 : 0) *)
          let c1 = VarAssign(ide, PtrRead(e4, a.label)) in
-          {conf with cs = If(e1, c1, Fail) :: cs1}, None
+          {conf with cs = If(e1, c1, Fail, 0) :: cs1}, None (* if_id 0 means an array access *)
     (*
 compiliamo
 x := protect(a[e])
@@ -75,10 +75,10 @@ come fanno nel paper, per evitare di introdurre un nome nuovo
 
 let stepPFetch (pred : prediction) (conf : configuration) : configuration * observation =
   match conf.cs with
-    | If(guard_expr, then_cmd, else_cmd) :: cs1
+    | If(guard_expr, then_cmd, else_cmd, id) :: cs1
       -> let taken = if pred then then_cmd else else_cmd
          and not_taken = if pred then else_cmd else then_cmd in
-          {conf with cs = taken :: cs1; is = conf.is @ [Guard(guard_expr, pred, not_taken :: cs1, fresh#get)]}, None
+          {conf with cs = taken :: cs1; is = conf.is @ [Guard(guard_expr, pred, not_taken :: cs1, fresh#get, id)]}, None
     | _ -> failwith "Can't PFetch"
 
 let stepRetire (conf : configuration) : configuration * observation =
@@ -145,7 +145,7 @@ let stepExec (n : int) (conf : configuration) : configuration * observation =
           match is with
             | Assign(_, Cst(_)) -> failwith "Can't Exec"
             | Assign(ide, e) -> {conf with is = is1 @ [Assign(ide, Cst(eval e rho))] @ is2}, None
-            | Guard(e, p, cs', id) -> 
+            | Guard(e, p, cs', id, _) -> 
                 if eval e rho = CstB(p)
                   then {conf with is = is1 @ [Nop] @ is2}, None
                   else {conf with is = is1 @ [Nop]; cs = cs'}, Rollback(id)
@@ -161,7 +161,7 @@ let stepExec (n : int) (conf : configuration) : configuration * observation =
                       | (CstI(n), CstI(v)) -> {conf with is = is1 @ [Store(Cst(CstI(n)), l, Cst(CstI(v)))] @is2}, Write(n, [])
                       | _, _ -> failwith "store of non integer values")
             | IProtect(ide, Cst(v)) ->
-                if List.exists (fun i -> match i with | Guard(_,_,_,_) -> true | _ -> false) is1 = true 
+                if List.exists (fun i -> match i with | Guard(_,_,_,_,_) -> true | _ -> false) is1 = true 
                   then failwith "Can't Exec"
                   else {conf with is = is1 @ [Assign(ide, Cst(v))] @ is2}, None
             | IProtect(ide, expr) -> {conf with is = is1 @ [IProtect(ide, Cst(eval expr rho))] @ is2}, None

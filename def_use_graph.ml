@@ -14,8 +14,8 @@ type augmented_cmd_t =
   | APtrAssign of expr * expr * label
   | AArrAssign of arr * expr * expr
   | ASeq of augmented_cmd_t * augmented_cmd_t
-  | AIf of expr * augmented_cmd_t * augmented_cmd_t
-  | AWhile of expr * augmented_cmd_t
+  | AIf of expr * augmented_cmd_t * augmented_cmd_t * if_id
+  | AWhile of expr * augmented_cmd_t * if_id
   | AProtect of identifier * protect * rhs;;
 
 let rec string_of_acmd (c : augmented_cmd_t) : string =
@@ -25,8 +25,8 @@ let rec string_of_acmd (c : augmented_cmd_t) : string =
                | APtrAssign(e1, e2, _) -> "*" ^ string_of_expr e1 ^ " := " ^ string_of_expr e2
                | AArrAssign(a, e1, e2) -> string_of_value (CstA a) ^ "[" ^ string_of_expr e1 ^ "] := " ^ string_of_expr e2
                | ASeq(c1, c2) -> string_of_acmd c1 ^ ";\n" ^ string_of_acmd c2
-               | AIf(e, c1, c2) -> "if (" ^ string_of_expr e ^ ") then \n" ^ string_of_acmd c1 ^ "\nelse\n" ^ string_of_acmd c2 ^ "\nfi"
-               | AWhile(e, c) -> "while (" ^ string_of_expr e ^ ") do \n" ^ string_of_acmd c ^ "\nod"
+               | AIf(e, c1, c2, _) -> "if (" ^ string_of_expr e ^ ") then \n" ^ string_of_acmd c1 ^ "\nelse\n" ^ string_of_acmd c2 ^ "\nfi"
+               | AWhile(e, c, _) -> "while (" ^ string_of_expr e ^ ") do \n" ^ string_of_acmd c ^ "\nod"
                | AProtect(ide, p, r) -> ide ^ " := Protect(" ^ string_of_rhs r ^ ")"
 
 let rec reduce_cmd (c : augmented_cmd_t) : cmd =
@@ -37,8 +37,8 @@ let rec reduce_cmd (c : augmented_cmd_t) : cmd =
     | APtrAssign(e1, e2, l) -> PtrAssign(e1, e2, l)
     | AArrAssign(a, e1, e2) -> ArrAssign(a, e1, e2)
     | ASeq(c1, c2) -> Seq(reduce_cmd c1, reduce_cmd c2)
-    | AIf(e, c1, c2) -> If(e, reduce_cmd c1, reduce_cmd c2)
-    | AWhile(e, c1) -> While(e, reduce_cmd c1)
+    | AIf(e, c1, c2, id) -> If(e, reduce_cmd c1, reduce_cmd c2, id)
+    | AWhile(e, c1, id) -> While(e, reduce_cmd c1, id)
     | AProtect(ide, p, r) -> Protect(ide, p, r);;
 
 type _builder_t = {
@@ -132,17 +132,17 @@ let rec _build_du_cmd (c : cmd) (b : _builder_t) (depth : int) (n_istr : int) (b
                   let c1', n_istr1 = _build_du_cmd c1 b depth n_istr bp in
                   let c2', n_istr2 = _build_du_cmd c2 b depth (n_istr + n_istr1) bp in
                     ASeq(c1', c2'), n_istr1 + n_istr2
-               | If(e, c1, c2) ->
+               | If(e, c1, c2, id) ->
                     _build_du_expr e b;
                     b.g <- connect b.g (get_node b (NExpr e), sink b.g) inf;
                     let c1', n_istr1 = _build_du_cmd c1 b depth (n_istr + 1) bp in
                     let c2', n_istr2 = _build_du_cmd c2 b depth (n_istr + 1) bp in
-                    AIf(e, c1', c2'), 1 + (max n_istr1  n_istr2)
-               | While(e, c) ->
+                    AIf(e, c1', c2', id), 1 + (max n_istr1  n_istr2)
+               | While(e, c, id) ->
                     _build_du_expr e b;
                     b.g <- connect b.g (get_node b (NExpr e), sink b.g) inf;
                     let c', n_istr' = _build_du_cmd c b (depth + 1) (n_istr + 1) bp in
-                    AWhile(e, c'), 1 + n_istr'
+                    AWhile(e, c', id), 1 + n_istr'
                | Protect(ide, p, r) ->
                     (* we consider already present protects as constraints and preserve them *)
                     _build_du_rhs r b;

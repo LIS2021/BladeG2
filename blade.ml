@@ -24,8 +24,8 @@ let rec repair (c : augmented_cmd_t) (cut : node list) : cmd =
     | APtrAssign(e1, e2, l) -> PtrAssign(e1, e2, l)
     | AArrAssign(a, e1, e2) -> ArrAssign(a, e1, e2)
     | ASeq(c1, c2) -> Seq(repair c1 cut, repair c2 cut)
-    | AIf(e, c1, c2) -> If(e, repair c1 cut, repair c2 cut)
-    | AWhile(e, c1) -> While(e, repair c1 cut)
+    | AIf(e, c1, c2, id) -> If(e, repair c1 cut, repair c2 cut, id)
+    | AWhile(e, c1, id) -> While(e, repair c1 cut, id)
     | AProtect(ide, p, r) -> Protect(ide, p, r);;
 
 let print_environment (rho : environment) : unit =
