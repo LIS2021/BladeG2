@@ -9,4 +9,4 @@ scanner.ml
 # Output executable
 vm
 blade
-du_prova
+vm_nocache

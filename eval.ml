@@ -22,11 +22,11 @@ let stepFetch (conf : configuration) : configuration * observation =
     | Fail :: cs1 -> {conf with cs = cs1; is = conf.is @ [Fail(fresh#get)]}, None
     | VarAssign(ide, Expr(expr)) :: cs1 -> {conf with cs = cs1; is = conf.is @ [Assign(ide, expr)]}, None
     | VarAssign(ide, PtrRead(addr_expr, l)) :: cs1 -> {conf with cs = cs1; is = conf.is @ [Load(ide, l, addr_expr)]}, None
-    | VarAssign(ide, ArrayRead(a, idx_expr)) :: cs1 -> let guard_expr = BinOp(idx_expr, Length(Cst(CstA(a))), Lt)
+    | VarAssign(ide, ArrayRead(a, idx_expr)) :: cs1 -> let guard_expr = BinOp(idx_expr, Length(a.name), Lt)
                                                        and then_cmd = VarAssign(ide, PtrRead(BinOp(Base(Cst(CstA(a))), idx_expr, Add), a.label)) in
                                                          {conf with cs = If(guard_expr, then_cmd, Fail, 0) :: cs1}, None (* if_id 0 means an array access *)
     | PtrAssign(addr_expr, expr, l) :: cs1 -> {conf with cs = cs1; is = conf.is @ [Store(addr_expr, l, expr)]}, None
-    | ArrAssign(a, idx_expr, expr) :: cs1 -> let guard_expr = BinOp(idx_expr, Length(Cst(CstA(a))), Lt)
+    | ArrAssign(a, idx_expr, expr) :: cs1 -> let guard_expr = BinOp(idx_expr, Length(a.name), Lt)
                                              and then_cmd = PtrAssign(BinOp(Base(Cst(CstA(a))), idx_expr, Add), expr, a.label) in
                                               {conf with cs = If(guard_expr, then_cmd, Fail, 0) :: cs1}, None (* if_id 0 means an array access *)
     | Seq(c1, c2) :: cs1 -> {conf with cs = c1 :: c2 :: cs1}, None
@@ -34,7 +34,7 @@ let stepFetch (conf : configuration) : configuration * observation =
                                                {conf with cs = If(guard_expr, c1, Skip, id) :: cs1}, None
     (* protect *)
     | Protect(ide, Slh, ArrayRead(a, idx_expr)) :: cs1
-      -> let e1 = BinOp(idx_expr, Length(Cst(CstA(a))), Lt) in (* e < length(a) *)
+      -> let e1 = BinOp(idx_expr, Length(a.name), Lt) in (* e < length(a) *)
          let e2 = BinOp(Base(Cst(CstA(a))), idx_expr, Add) in (* base(a) + e *)
          let e3 = InlineIf(e1, Cst(CstI(Int.max_int)), Cst(CstI(0)) ) in (* e < length(a) ? 1 : 0 *)
          let e4 = BinOp(e2, e3, BitAnd) in (* (base(a) + e) land (e < length(a) ? 1 : 0) *)
@@ -126,7 +126,7 @@ let rec eval (e: expr) (rho : value StringMap.t): value =
                               | CstB(true), v, _ 
                               | CstB(false), _, v -> v
                               | _,_,_ -> failwith("Errore di tipo: if inline"))
-    | Length(e) -> (match (eval e rho) with 
+    | Length(ide) -> (match StringMap.find ide rho with 
                               | CstA(v) -> CstI(v.length)
                               | _ -> failwith("Errore di tipo: length"))
     | Base(e) -> (match (eval e rho) with

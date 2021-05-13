@@ -73,7 +73,8 @@ let get_node (b : _builder_t) (n : node_t) : node =
                 v
 
 let rec _build_du_expr (e : expr) (b : _builder_t) : unit =
-  match e with | Cst(v) -> ()
+  match e with | Cst(_)
+               | Length(_) -> ()
                | Var(ide) -> let _ = get_node b (NVar ide) in ()
                | BinOp(e1, e2, _) ->
                   _build_du_expr e1 b;
@@ -89,7 +90,6 @@ let rec _build_du_expr (e : expr) (b : _builder_t) : unit =
                   b.g <- connect b.g (get_node b (NExpr e1), n_e) inf;
                   b.g <- connect b.g (get_node b (NExpr e2), n_e) inf;
                   b.g <- connect b.g (get_node b (NExpr e3), n_e) inf;
-               | Length(e)
                | Base(e) -> _build_du_expr e b;;
 
 let _build_du_rhs (r : rhs) (b : _builder_t) : unit =

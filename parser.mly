@@ -71,7 +71,7 @@ expr:
     | expr LTE expr         { BinOp($1, $3, Lte) }
     | expr LT expr         { BinOp($1, $3, Lt) }
     | expr BITAND expr           { BinOp($1, $3, BitAnd) }
-    | LENGTH LPAREN expr RPAREN {Length($3)}
+    | LENGTH LPAREN IDENTIFIER RPAREN {Length($3)}
     | BASE LPAREN expr RPAREN {Base($3)}
     | expr QUESTIONMARK expr COLON expr { InlineIf($1, $3, $5) }
     | IDENTIFIER {Var($1)}

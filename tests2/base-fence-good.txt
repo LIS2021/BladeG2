@@ -1,0 +1,24 @@
+%
+a[10]
+i := 0
+j := 0
+sum := 0
+%
+while ((i < length(a))) do 
+    a[i] := i;
+    i := (i + 1)
+od;
+while ((j < length(a))) do
+    tmp := a[j];
+    sum := (sum + tmp);
+    j := (j + 1)
+od;
+grd := protect_fence(sum);
+if (0 < grd) then
+    i := i + 1;
+    i := i + 1;
+    i := i + 1
+else
+    j := j + 1;
+    j := j + 1
+fi

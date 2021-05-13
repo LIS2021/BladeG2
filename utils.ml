@@ -13,3 +13,8 @@ let split (l : 'a list) (n : int) =
 let rec take k xs = match xs with
     | [] -> []
     | x::xs -> if k <= 0 then [] else x::take (k-1) xs;;
+
+let rec delete (x : 'a) (l : 'a list) : 'a list =
+  match l with | [] -> []
+               | y :: l' when y = x -> l'
+               | y :: l' -> y :: delete x l'

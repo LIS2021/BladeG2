@@ -1,9 +1,12 @@
 .PHONY: clean cleanall all
 
-all: vm blade
+all: vm vm_nocache blade
 
 vm: expr.cmx commands.cmx utils.cmx eval.cmx processor.cmx parser.cmx scanner.cmx vm.cmx
 	ocamlopt -o vm $^
+
+vm_nocache: expr.cmx commands.cmx utils.cmx eval.cmx processor.cmx parser.cmx scanner.cmx vm_nocache.cmx
+	ocamlopt -o vm_nocache $^
 
 blade: expr.cmx commands.cmx graph.cmx scanner.cmx parser.cmx flow_network.cmx def_use_graph.cmx blade.cmx
 	ocamlopt -o blade $^
@@ -15,7 +18,7 @@ clean:
 	rm -f *.cmx *.mli *.o
 
 cleanall: clean
-	rm -f parser.ml scanner.ml *.cmi vm blade
+	rm -f parser.ml scanner.ml *.cmi vm vm_nocache blade
 
 parser.mli: parser.mly
 	ocamlyacc $<
@@ -33,6 +36,7 @@ parser.cmi: parser.mli parser.ml commands.cmi
 	ocamlopt -c $<
 
 vm.cmx: vm.ml processor.cmi expr.cmi eval.cmi parser.cmi scanner.cmi
+vm-nocache.cmx: vm.ml processor.cmi expr.cmi eval.cmi parser.cmi scanner.cmi
 
 eval.cmi: eval.ml expr.cmi commands.cmi utils.cmi
 

@@ -38,7 +38,7 @@ type expr =
   | Var of identifier
   | BinOp of expr * expr * op
   | InlineIf of expr * expr * expr
-  | Length of expr
+  | Length of identifier
   | Base of expr;;
 
 let rec string_of_expr (e : expr) : string =
@@ -46,7 +46,7 @@ let rec string_of_expr (e : expr) : string =
                | Var x -> x
                | BinOp(e1, e2, op) -> "(" ^ string_of_expr e1 ^ " " ^ string_of_op op ^ " " ^ string_of_expr e2 ^ ")"
                | InlineIf(e1, e2, e3) -> string_of_expr e1 ^ " ? " ^ string_of_expr e2 ^ " : " ^ string_of_expr e3
-               | Length(e1) -> "length(" ^ string_of_expr e1 ^ ")"
+               | Length(ide) -> "length(" ^ ide ^ ")"
                | Base(e1) -> "base(" ^ string_of_expr e1 ^ ")"
 
 type rhs =

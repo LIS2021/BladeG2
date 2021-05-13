@@ -99,6 +99,23 @@ class speculator =
       while_flag <- true
   end;;
 
+type cacheline =
+  | CLArray of identifier
+  | CLMem of int;;
+
+class cache =
+  object(self)
+    val cache_size = 5
+    val mutable lines = ([] : cacheline list)
+
+    method is_hit (l : cacheline) : bool =
+      List.mem l lines
+
+    method refresh (l : cacheline) : unit =
+      let lines' = delete l lines in
+      lines <- take cache_size (l :: lines')
+  end;;
+
 module Processor = struct
   class type processor_t =
     object
@@ -193,15 +210,17 @@ module Processor = struct
       method print_state (_ : bool) = ()
     end;;
 
-  class complex_processor : processor_t =
+  class complex_processor (static_len : bool) : processor_t =
     object(self)
       val onthefly_buffer_target_len = (20 : int)
+      val length_load_cost = mem_op_cost
       val mem_op_cost = mem_op_cost
+      (* val static_len = true *)
 
       (* For each load we keep: identifier = variable assigned, int = time left, guard_id list = list of guard ids of
-         guards that, when rollbacked, removes this load, int = timestamp of the load *)
+         guards that, when rollbacked, removes this load, int = timestamp of the load, cacheline = mem address della load *)
       (* TODO: forse il guard_id list non serve con i timestamp, ma vediamo dopo *)
-      val mutable pending_loads_buffer = ([] : (identifier * (int * guard_id list * int)) list)
+      val mutable pending_loads_buffer = ([] : (identifier * (int * guard_id list * int * cacheline)) list)
       val mutable exec_idx = 0
 
       val mutable exec_trace = ([] : step_t list)
@@ -216,23 +235,25 @@ module Processor = struct
       val mutable loadn = (0 : int)
 
       val specul = new speculator
+      val proc_cache = new cache
 
       method private can_retire (is : instruction list) : bool =
         match is with
           | Store(Cst(CstI(_)), _, Cst(CstI(_))) :: _ -> pending_loads_buffer = []
           (* Checking that this Assign isn't the result of a load that hasn't completed yet *)
-          | Assign(ide, Cst(_)) :: _ -> not (List.exists (fun (idel, (_, _, ts)) -> ide = idel && ts = retnum) pending_loads_buffer)
+          | Assign(ide, Cst(_)) :: _ -> not (List.exists (fun (idel, (_, _, ts, _)) -> ide = idel && ts = retnum) pending_loads_buffer)
           | _ -> can_retire is
 
       (* Pay t time and possibly reduce cost of pending loads *)
       method private pay_time (t : int) : unit =
         let rec helper (n : int) : unit =
           match pending_loads_buffer with | [] -> ()
-                                          | (ide, (v, l, ts)) :: ls when v > n -> pending_loads_buffer <- (ide, (v - n, l, ts)) :: ls
-                                          | (ide, (v, _, _)) :: ls -> pending_loads_buffer <- ls;
-                                                                      exec_trace <- SLoadEnd(ide, 0) :: exec_trace;
-                                                                      exec_idx <- 0;
-                                                                      helper (n - v)
+                                          | (ide, (v, l, ts, addr)) :: ls when v > n -> pending_loads_buffer <- (ide, (v - n, l, ts, addr)) :: ls
+                                          | (ide, (v, _, _, addr)) :: ls -> pending_loads_buffer <- ls;
+                                                                            exec_trace <- SLoadEnd(ide, 0) :: exec_trace;
+                                                                            exec_idx <- 0;
+                                                                            if static_len then proc_cache#refresh addr;
+                                                                            helper (n - v)
         in
         helper t;
         (* exec_trace <- SCost(t) :: exec_trace; *)
@@ -268,11 +289,23 @@ module Processor = struct
       method private depends_pending_load (e : expr) (ts : int) : bool =
         let rec helper (e : expr) : bool =
           match e with | Cst(_) -> false
-                       | Var(ide) -> List.mem_assoc ide (List.filter (fun (_, (_, _, tsl)) -> tsl <= ts) pending_loads_buffer)
+                       | Var(ide) -> List.mem_assoc ide (List.filter (fun (_, (_, _, tsl, _)) -> tsl <= ts) pending_loads_buffer)
                        | BinOp(e1, e2, _) -> helper e1 || helper e2
                        | InlineIf(e, e1, e2) -> helper e || helper e1 || helper e2
-                       | Length(e)
                        | Base(e) -> helper e
+                       | Length(ide) -> static_len &&
+                            (* this cases implicitly handles loads of length(a): it checks whether length(a) is already in cache, and in this case
+                               it returns false because we can exec an expression that depends on length(a). Otherwise it requires the load of length(a)
+                               (only if it isn't already in the pending loads buffer) and returns true because we can't exec the expression. *)
+                          if proc_cache#is_hit (CLArray ide) then (
+                            proc_cache#refresh (CLArray ide);
+                            false
+                          )
+                          else (
+                            if not (List.exists (fun pl -> match pl with | ("", (_, _, _, CLArray ide)) -> true | _ -> false) pending_loads_buffer) then
+                              pending_loads_buffer <- pending_loads_buffer @ [("", (length_load_cost, [], ts, CLArray ide))];
+                            true
+                          )
           in helper e
 
       method private i_depends_pending_load (i : instruction) (ts : int) : bool =
@@ -285,29 +318,45 @@ module Processor = struct
                      | Fence
                      | Fail(_) -> false
 
+      method private cant_exec (n : int) (istr : instruction) (is : instruction list) (rho : environment) : bool =
+        (* let is_double_load = static_len && match istr with
+            | Load(_, _, e) -> (match Eval.eval e (Eval.phi (take n is) rho) with
+                                    | CstI(pos) -> List.exists (fun (_, (_, _, _, addr)) -> addr = CLMem pos) pending_loads_buffer
+                                    | _ -> failwith "Shouldn't reach this program point (see processor#cant_exec)!" )
+            | _ -> false
+        in *)
+        (not (can_exec n is rho)) || self#i_depends_pending_load istr (retnum + n)
+        || (static_len && match istr with
+                | Load(_, _, e) -> (match Eval.eval e (Eval.phi (take n is) rho) with
+                                        | CstI(pos) -> List.exists (fun (_, (_, _, _, addr)) -> addr = CLMem pos) pending_loads_buffer
+                                        | _ -> failwith "Shouldn't reach this program point (see processor#cant_exec)!" )
+                | _ -> false)
+
       method private get_exec (conf : configuration) : directive =
         let istr = List.nth_opt conf.is exec_idx in
         if istr = None then (
           (* Se nessuna delle n istruzioni successive è eseguibile si attende la terminazione della prima load pendente,
              poi si riparte perché questa load potrebbe aver sbloccato alcune istruzioni *)
           (match pending_loads_buffer with | [] -> failwith "Exec out of instruction list with empty pending loads buffer"
-                                           | (ide, (v, _, _)) :: ls -> (* exec_trace <- SCost(v) :: exec_trace; *)
-                                                                       tot_cost <- tot_cost + v;
-                                                                       loadc <- loadc + v;
-                                                                       exec_trace <- SLoadEnd(ide, v) :: exec_trace;
-                                                                       pending_loads_buffer <- ls);
+                                           | (ide, (v, _, _, addr)) :: ls -> (* exec_trace <- SCost(v) :: exec_trace; *)
+                                                                             tot_cost <- tot_cost + v;
+                                                                             loadc <- loadc + v;
+                                                                             exec_trace <- SLoadEnd(ide, v) :: exec_trace;
+                                                                             if static_len then proc_cache#refresh addr;
+                                                                             pending_loads_buffer <- ls);
           exec_idx <- 0;
           self#get_next_directive conf)
         else (
           let current_exec_idx = exec_idx in
-          if (not (can_exec current_exec_idx conf.is conf.rho)) || self#i_depends_pending_load (Option.get istr) (retnum + current_exec_idx) then (
+          if self#cant_exec current_exec_idx (Option.get istr) conf.is conf.rho then (
             (* Can't exec the instruction due to semantics or to pending loads *)
             exec_idx <- exec_idx + 1;
             self#get_exec conf)
           else (
             (* Can exec the instruction *)
             if current_exec_idx = 0 then exec0 <- exec0 + 1 else execOOO <- execOOO + 1;
-            if current_exec_idx > 0 && pending_loads_buffer = [] then failwith "Can't Exec out of order without pending loads" else ();
+            if current_exec_idx > 0 && pending_loads_buffer = [] then failwith "Can't Exec out of order without pending loads";
+            (* match to actually execute instructions *)
             match Option.get istr with | IProtect(_, _)
                                        | Assign(_, _)
                                        | Store(_, _, _) -> (
@@ -321,22 +370,29 @@ module Processor = struct
                                             (* Rollback, we drop pending loads that were rollbacked *)
                                             specul#update_stats idi (not p);
                                             exec_trace <- SRollback(idg) :: exec_trace;
-                                            pending_loads_buffer <- List.filter (fun (_, (_, ids, _)) -> not (List.mem idg ids)) pending_loads_buffer; (* TODO really need ids? *)
+                                            (* pending_loads_buffer <- List.filter (fun (_, (_, ids, _, _)) -> not (List.mem idg ids)) pending_loads_buffer; *)
+                                            pending_loads_buffer <- List.filter (fun (_, (_, _, tsl, _)) -> tsl <= retnum + current_exec_idx) pending_loads_buffer;
                                             exec_idx <- 0)
                                           else (
                                             specul#update_stats idi p);
                                           exec_idx <- exec_idx + 1;
                                           self#add_exec_cost (Option.get istr);
                                           Exec current_exec_idx)
-                                       | Load(ide, _, _) -> (
+                                       | Load(ide, _, e) -> (
                                           exec_idx <- exec_idx + 1;
                                           loadn <- loadn + 1;
                                           self#add_exec_cost (Option.get istr);
                                           exec_trace <- SExec (current_exec_idx, Option.get istr) :: exec_trace;
-                                          let guard_ids = List.filter_map (fun i -> match i with | Guard(_, _, _, id, _) -> some id | _ -> none) (take current_exec_idx conf.is) in
-                                          pending_loads_buffer <- pending_loads_buffer @ [(ide, (mem_op_cost, guard_ids, retnum + current_exec_idx))];
+                                          (match Eval.eval e (Eval.phi (take current_exec_idx conf.is) conf.rho) with
+                                            | CstI(addr) -> if static_len && proc_cache#is_hit (CLMem addr) then
+                                                proc_cache#refresh (CLMem addr)
+                                              else (
+                                                let guard_ids = List.filter_map (fun i -> match i with | Guard(_, _, _, id, _) -> some id | _ -> none) (take current_exec_idx conf.is) in
+                                                pending_loads_buffer <- pending_loads_buffer @ [(ide, (mem_op_cost, guard_ids, retnum + current_exec_idx, CLMem addr))];
+                                              );
+                                            | _ -> failwith "Shouldn't reach this program point (see processor#get_exec)!");
                                           Exec current_exec_idx)
-                                       | _ -> failwith "shouldn't reach this program point (see processor#get_exec)!"
+                                       | _ -> failwith "Shouldn't reach this program point (see processor#get_exec)!"
           )
         )
 
@@ -348,6 +404,9 @@ module Processor = struct
           self#add_retire_cost (List.hd conf.is);
           exec_trace <- SRetire (List.hd conf.is) :: exec_trace;
           retnum <- retnum + 1;
+          if static_len then (
+            match List.hd conf.is with | Store(Cst(CstI(addr)), _, _) -> proc_cache#refresh (CLMem addr)
+                                       | _ -> ());
           Retire
         )
         else
@@ -364,7 +423,7 @@ module Processor = struct
         if pending_loads_buffer = [] then
           printf "empty"
         else
-          List.iter (fun (ide, (v, _, ts)) -> printf "(%s - v: %d, ts: %d), " ide v ts) pending_loads_buffer;
+          List.iter (fun (ide, (v, _, ts, _)) -> printf "(%s - v: %d, ts: %d), " ide v ts) pending_loads_buffer;
         printf "\n"
 
       method print_state (verbose : bool) =
