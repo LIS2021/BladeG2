@@ -11,9 +11,6 @@ vm_nocache: expr.cmx commands.cmx utils.cmx eval.cmx processor.cmx parser.cmx sc
 blade: expr.cmx commands.cmx graph.cmx scanner.cmx parser.cmx flow_network.cmx def_use_graph.cmx blade.cmx
 	ocamlopt -o blade $^
 
-# du_prova: expr.cmx commands.cmx graph.cmx scanner.cmx parser.cmx def_use_graph.cmx
-# 	ocamlopt -o du_prova $^
-
 clean:
 	rm -f *.cmx *.mli *.o
 
@@ -36,7 +33,7 @@ parser.cmi: parser.mli parser.ml commands.cmi
 	ocamlopt -c $<
 
 vm.cmx: vm.ml processor.cmi expr.cmi eval.cmi parser.cmi scanner.cmi
-vm-nocache.cmx: vm.ml processor.cmi expr.cmi eval.cmi parser.cmi scanner.cmi
+vm-nocache.cmx: vm-nocache.ml processor.cmi expr.cmi eval.cmi parser.cmi scanner.cmi
 
 eval.cmi: eval.ml expr.cmi commands.cmi utils.cmi
 
